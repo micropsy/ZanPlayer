@@ -4,17 +4,17 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
-use tauri_plugin_fs::FsExt;
+use tauri::AppHandle;
 use directories_next::ProjectDirs;
 use flate2::read::GzDecoder;
 use tar::Archive;
 use zip::read::ZipArchive;
 #[cfg(feature = "whisper")]
-use whisper_rs::{WhisperContext, FullParams, SamplingStrategy};
+use whisper_rs::{WhisperContext, FullParams, SamplingStrategy, WhisperContextParameters};
 #[cfg(feature = "whisper")]
 use hound;
-
+use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_shell::ShellExt;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct VideoFile {
@@ -36,7 +36,7 @@ fn get_app_dir() -> PathBuf {
 }
 
 #[tauri::command]
-async fn download_ffmpeg(app: AppHandle) -> Result<String, String> {
+async fn download_ffmpeg(_app: AppHandle) -> Result<String, String> {
     let app_dir = get_app_dir();
     std::fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
 
@@ -70,17 +70,8 @@ async fn download_ffmpeg(app: AppHandle) -> Result<String, String> {
     let mut file = File::create(&zip_path).map_err(|e| e.to_string())?;
 
     let response = reqwest::get(url).await.map_err(|e| e.to_string())?;
-    let total_size = response.content_length().unwrap_or(0);
-    let mut downloaded = 0u64;
-
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = futures_util::stream::TryStreamExt::try_next(&mut stream)
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        file.write_all(&chunk).map_err(|e| e.to_string())?;
-        downloaded += chunk.len() as u64;
-    }
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    file.write_all(&bytes).map_err(|e| e.to_string())?;
 
     let ffmpeg_path = app_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
     let file = File::open(&zip_path).map_err(|e| e.to_string())?;
@@ -102,8 +93,8 @@ async fn download_ffmpeg(app: AppHandle) -> Result<String, String> {
         let mut archive = Archive::new(tar);
         for entry in archive.entries().map_err(|e| e.to_string())? {
             let mut entry = entry.map_err(|e| e.to_string())?;
-            if let Some(path) = entry.path().ok().and_then(|p| p.file_name()) {
-                if path == "ffmpeg" {
+            if let Some(path_os) = entry.path().ok().and_then(|p| p.file_name().map(|n| n.to_os_string())) {
+                if path_os == "ffmpeg" {
                     let mut out = File::create(&ffmpeg_path).map_err(|e| e.to_string())?;
                     std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
                     break;
@@ -129,7 +120,7 @@ async fn download_ffmpeg(app: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 #[cfg(feature = "whisper")]
-async fn download_whisper_model(app: AppHandle, model_name: String) -> Result<String, String> {
+async fn download_whisper_model(_app: AppHandle, model_name: String) -> Result<String, String> {
     let app_dir = get_app_dir();
     let models_dir = app_dir.join("models");
     std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
@@ -148,14 +139,8 @@ async fn download_whisper_model(app: AppHandle, model_name: String) -> Result<St
 
     let mut file = File::create(&model_path).map_err(|e| e.to_string())?;
     let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
-    let mut stream = response.bytes_stream();
-
-    while let Some(chunk) = futures_util::stream::TryStreamExt::try_next(&mut stream)
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        file.write_all(&chunk).map_err(|e| e.to_string())?;
-    }
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    file.write_all(&bytes).map_err(|e| e.to_string())?;
 
     Ok(model_path.to_string_lossy().to_string())
 }
@@ -176,7 +161,8 @@ async fn transcribe_audio_local(
         download_whisper_model(app, model_name).await?;
     }
 
-    let ctx = WhisperContext::new(&model_path.to_string_lossy())
+    let params = WhisperContextParameters::default();
+    let ctx = WhisperContext::new_with_params(&model_path.to_string_lossy(), params)
         .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
 
     let mut reader = hound::WavReader::open(audio_path)
@@ -191,7 +177,7 @@ async fn transcribe_audio_local(
     let samples_f32: Vec<f32> = samples.iter().map(|&x| x as f32 / i16::MAX as f32).collect();
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_single_segment(true);
+    params.set_single_segment(false);
     params.set_translate(false);
     params.set_language(language.as_deref());
     params.set_print_special(false);
@@ -202,18 +188,14 @@ async fn transcribe_audio_local(
     let mut state = ctx.create_state().map_err(|e| e.to_string())?;
     state.full(params, &samples_f32).map_err(|e| e.to_string())?;
 
-    let num_segments = state.full_n_segments();
     let mut cues = Vec::new();
-
-    for i in 0..num_segments {
-        let start = state.full_get_segment_t0(i) as f64 / 100.0;
-        let end = state.full_get_segment_t1(i) as f64 / 100.0;
-        let text = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
-
+    for segment in state.as_iter() {
+        let start = segment.start_timestamp() as f64 / 100.0;
+        let end = segment.end_timestamp() as f64 / 100.0;
+        let text = segment.to_string();
         if text.trim().is_empty() {
             continue;
         }
-
         cues.push(SubtitleCue {
             id: uuid::Uuid::new_v4().to_string(),
             start_time: start,
@@ -225,57 +207,54 @@ async fn transcribe_audio_local(
     Ok(cues)
 }
 
-
 #[tauri::command]
 async fn open_video_dialog(app: AppHandle) -> Result<Option<VideoFile>, String> {
-    let file_path = tauri_plugin_dialog::DialogBuilder::new()
+    let file_path = app.dialog().file()
         .add_filter("Video Files", &["mp4", "webm", "mkv", "avi", "mov", "m4v"])
-        .pick_file(&app)
-        .await
-        .map(|path| {
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            VideoFile {
-                path: path.to_string_lossy().to_string(),
-                name,
-            }
-        });
-    Ok(file_path)
+        .blocking_pick_file();
+
+    let video_file = file_path.map(|p| {
+        let name = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        VideoFile {
+            path: p.to_string_lossy().to_string(),
+            name,
+        }
+    });
+
+    Ok(video_file)
 }
 
 #[tauri::command]
 async fn open_subtitle_dialog(app: AppHandle) -> Result<Option<String>, String> {
-    let file_path = tauri_plugin_dialog::DialogBuilder::new()
-        .add_filter(
-            "Subtitle Files",
-            &["srt", "vtt", "ass", "ssa", "sub"],
-        )
-        .pick_file(&app)
-        .await
-        .map(|path| path.to_string_lossy().to_string());
-    Ok(file_path)
+    let file_path = app.dialog().file()
+        .add_filter("Subtitle Files", &["srt", "vtt", "ass", "ssa", "sub"])
+        .blocking_pick_file();
+
+    let file_str = file_path.map(|p| p.to_string_lossy().to_string());
+    Ok(file_str)
 }
 
 #[tauri::command]
 async fn save_subtitle_dialog(app: AppHandle, default_name: String) -> Result<Option<String>, String> {
-    let file_path = tauri_plugin_dialog::DialogBuilder::new()
+    let file_path = app.dialog().file()
         .add_filter("SRT Files", &["srt"])
         .add_filter("VTT Files", &["vtt"])
         .add_filter("ASS Files", &["ass"])
         .set_file_name(default_name)
-        .save_file(&app)
-        .await
-        .map(|path| path.to_string_lossy().to_string());
-    Ok(file_path)
+        .blocking_save_file();
+
+    let file_str = file_path.map(|p| p.to_string_lossy().to_string());
+    Ok(file_str)
 }
 
 #[tauri::command]
 async fn read_subtitle_file(file_path: String) -> Result<Vec<SubtitleCue>, String> {
     let mut content = String::new();
-    File::open(file_path)
+    File::open(&file_path)
         .map_err(|e| e.to_string())?
         .read_to_string(&mut content)
         .map_err(|e| e.to_string())?;
@@ -285,10 +264,10 @@ async fn read_subtitle_file(file_path: String) -> Result<Vec<SubtitleCue>, Strin
         .map(|ext| ext.to_string_lossy().to_lowercase());
 
     let cues = match extension.as_deref() {
-        Some("srt") => parse_srt(&content),
-        Some("vtt") => parse_vtt(&content),
-        Some("ass") | Some("ssa") => parse_ass(&content),
-        _ => Err(format!("Unsupported subtitle format")),
+        Some("srt") => parse_srt(&content)?,
+        Some("vtt") => parse_vtt(&content)?,
+        Some("ass") | Some("ssa") => parse_ass(&content)?,
+        _ => Err(format!("Unsupported subtitle format"))?,
     };
 
     Ok(cues)
@@ -296,7 +275,7 @@ async fn read_subtitle_file(file_path: String) -> Result<Vec<SubtitleCue>, Strin
 
 fn parse_srt(text: &str) -> Result<Vec<SubtitleCue>, String> {
     let mut cues = Vec::new();
-    let blocks = text.trim().split(/\n\n+/);
+    let blocks: Vec<&str> = text.trim().split("\n\n").collect();
 
     for block in blocks {
         let lines: Vec<&str> = block.lines().collect();
@@ -371,7 +350,6 @@ fn parse_ass(text: &str) -> Result<Vec<SubtitleCue>, String> {
                     let start = parse_ass_time(parts.get(si).unwrap_or(&""))?;
                     let end = parse_ass_time(parts.get(ei).unwrap_or(&""))?;
                     let mut text = parts.get(ti).unwrap_or(&"").to_string();
-                    // Remove ASS tags like {\...}
                     text = text.replace(r"\N", "\n");
                     text = regex::Regex::new(r"\{.*?\}")
                         .unwrap_or_else(|_| regex::Regex::new(r"").unwrap())
@@ -415,7 +393,7 @@ fn parse_time_line(line: &str, sep: char) -> Option<(f64, f64)> {
 }
 
 fn parse_time_str(s: &str, sep: char) -> Result<f64, String> {
-    let parts: Vec<&str> = s.split(&sep).collect();
+    let parts: Vec<&str> = s.split(sep).collect();
     if parts.len() >= 2 {
         let time_part = parts[0];
         let frac_part = parts[1].chars().take(3).collect::<String>();
@@ -559,12 +537,11 @@ async fn extract_audio(
     ));
 
     let shell = app.shell();
-    let sidecar = if ffmpeg_path.exists() {
-        std::fs::copy(&ffmpeg_path, std::env::temp_dir().join(ffmpeg_path.file_name().unwrap())).unwrap();
-        shell.sidecar(std::env::temp_dir().join(ffmpeg_path.file_name().unwrap()).to_str().unwrap())
-    } else {
-        shell.sidecar("ffmpeg")
-    }.map_err(|e| format!("Failed to get FFmpeg: {}", e))?;
+    let temp_ffmpeg = std::env::temp_dir().join(ffmpeg_path.file_name().unwrap());
+    std::fs::copy(&ffmpeg_path, &temp_ffmpeg).map_err(|e| e.to_string())?;
+
+    let sidecar = shell.sidecar(temp_ffmpeg.to_str().unwrap())
+        .map_err(|e| format!("Failed to get FFmpeg: {}", e))?;
 
     let output = sidecar
         .args([
@@ -597,23 +574,23 @@ async fn extract_audio(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-    .plugin(tauri_plugin_dialog::init())
-    .plugin(tauri_plugin_fs::init())
-    .plugin(tauri_plugin_shell::init())
-    .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
-        open_video_dialog,
-        open_subtitle_dialog,
-        save_subtitle_dialog,
-        read_subtitle_file,
-        write_subtitle_file,
-        extract_audio,
-        download_ffmpeg,
-        #[cfg(feature = "whisper")]
-        download_whisper_model,
-        #[cfg(feature = "whisper")]
-        transcribe_audio_local,
-    ])
+            open_video_dialog,
+            open_subtitle_dialog,
+            save_subtitle_dialog,
+            read_subtitle_file,
+            write_subtitle_file,
+            extract_audio,
+            download_ffmpeg,
+            #[cfg(feature = "whisper")]
+            download_whisper_model,
+            #[cfg(feature = "whisper")]
+            transcribe_audio_local,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
