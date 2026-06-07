@@ -15,6 +15,7 @@ use whisper_rs::{WhisperContext, FullParams, SamplingStrategy, WhisperContextPar
 use hound;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_fs::FilePath;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct VideoFile {
@@ -188,14 +189,17 @@ async fn transcribe_audio_local(
     let mut state = ctx.create_state().map_err(|e| e.to_string())?;
     state.full(params, &samples_f32).map_err(|e| e.to_string())?;
 
+    let num_segments = state.full_n_segments();
     let mut cues = Vec::new();
-    for segment in state.as_iter() {
-        let start = segment.start_timestamp() as f64 / 100.0;
-        let end = segment.end_timestamp() as f64 / 100.0;
-        let text = segment.to_string();
+    for i in 0..num_segments {
+        let start = state.full_get_segment_t0(i) as f64 / 100.0;
+        let end = state.full_get_segment_t1(i) as f64 / 100.0;
+        let text = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
+
         if text.trim().is_empty() {
             continue;
         }
+
         cues.push(SubtitleCue {
             id: uuid::Uuid::new_v4().to_string(),
             start_time: start,
@@ -214,13 +218,14 @@ async fn open_video_dialog(app: AppHandle) -> Result<Option<VideoFile>, String> 
         .blocking_pick_file();
 
     let video_file = file_path.map(|p| {
-        let name = p
+        let path_buf = p.into_path().unwrap();
+        let name = path_buf
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
         VideoFile {
-            path: p.to_string_lossy().to_string(),
+            path: path_buf.to_string_lossy().to_string(),
             name,
         }
     });
@@ -234,7 +239,7 @@ async fn open_subtitle_dialog(app: AppHandle) -> Result<Option<String>, String> 
         .add_filter("Subtitle Files", &["srt", "vtt", "ass", "ssa", "sub"])
         .blocking_pick_file();
 
-    let file_str = file_path.map(|p| p.to_string_lossy().to_string());
+    let file_str = file_path.map(|p| p.into_path().unwrap().to_string_lossy().to_string());
     Ok(file_str)
 }
 
@@ -247,7 +252,7 @@ async fn save_subtitle_dialog(app: AppHandle, default_name: String) -> Result<Op
         .set_file_name(default_name)
         .blocking_save_file();
 
-    let file_str = file_path.map(|p| p.to_string_lossy().to_string());
+    let file_str = file_path.map(|p| p.into_path().unwrap().to_string_lossy().to_string());
     Ok(file_str)
 }
 
