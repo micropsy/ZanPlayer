@@ -65,4 +65,28 @@ export class TauriService {
     const binaryData = await readBinaryFile(filePath);
     return new Blob([binaryData], { type: "audio/wav" });
   }
+
+  static async transcribeAudioLocal(
+    audioPath: string,
+    modelName: string,
+    language?: string
+  ): Promise<SubtitleCue[]> {
+    const cues = await invoke<
+      Array<{ id: string; start_time: number; end_time: number; text: string }>
+    >("transcribe_audio_local", {
+      audioPath,
+      modelName,
+      language,
+    });
+    return cues.map((c) => ({
+      id: c.id,
+      startTime: c.start_time,
+      endTime: c.end_time,
+      text: c.text,
+    }));
+  }
+
+  static async downloadWhisperModel(modelName: string): Promise<string> {
+    return await invoke<string>("download_whisper_model", { modelName });
+  }
 }

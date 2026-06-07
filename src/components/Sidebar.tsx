@@ -48,6 +48,8 @@ export const Sidebar = () => {
     progressStep,
     progressPercent,
     setProgress,
+    useLocalWhisper,
+    whisperModel,
     setSeekTo,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<Tab>("main");
@@ -226,7 +228,7 @@ export const Sidebar = () => {
   };
 
   const handleGenerateSubtitles = async () => {
-    if (!apiKey) {
+    if (!useLocalWhisper && !apiKey) {
       alert("Please enter an OpenAI API key in Settings");
       return;
     }
@@ -239,25 +241,40 @@ export const Sidebar = () => {
     setProgress("extracting", 0);
     setErrorMessage(null);
     let audioFile: File | null = null;
+    let extractedAudioPath: string | null = null;
 
     try {
       if (currentVideoPath) {
         const audioPath = await TauriService.extractAudio(currentVideoPath);
+        extractedAudioPath = audioPath;
         setProgress("extracting", 50);
-        const audioBlob = await TauriService.readFileAsBlob(audioPath);
-        audioFile = new File([audioBlob], "extracted_audio.wav", { type: "audio/wav" });
+        if (!useLocalWhisper) {
+          const audioBlob = await TauriService.readFileAsBlob(audioPath);
+          audioFile = new File([audioBlob], "extracted_audio.wav", { type: "audio/wav" });
+        }
         setProgress("extracting", 100);
       } else if (currentVideo) {
         audioFile = currentVideo;
       }
 
-      if (!audioFile) {
-        throw new Error("No audio file available");
-      }
-
       setProgress("transcribing", 0);
-      const service = new OpenAIService(apiKey);
-      const cues = await service.transcribeAudio(audioFile);
+      let cues;
+      if (useLocalWhisper) {
+        if (!extractedAudioPath) {
+          throw new Error("Local transcription requires extracting audio first");
+        }
+        cues = await TauriService.transcribeAudioLocal(
+          extractedAudioPath,
+          whisperModel,
+          "en"
+        );
+      } else {
+        if (!audioFile) {
+          throw new Error("No audio file available for OpenAI API");
+        }
+        const service = new OpenAIService(apiKey);
+        cues = await service.transcribeAudio(audioFile);
+      }
       setProgress("transcribing", 100);
 
       const newTrack: SubtitleTrack = {

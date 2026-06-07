@@ -30,6 +30,7 @@ directories-next = "2.0"
 flate2 = "1.0"
 tar = "0.4"
 regex = "1.10"
+hound = "3.5"
 
 [features]
 default = ["custom-protocol", "whisper"]

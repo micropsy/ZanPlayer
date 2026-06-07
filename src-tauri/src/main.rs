@@ -10,6 +10,11 @@ use directories_next::ProjectDirs;
 use flate2::read::GzDecoder;
 use tar::Archive;
 use zip::read::ZipArchive;
+#[cfg(feature = "whisper")]
+use whisper_rs::{WhisperContext, FullParams, SamplingStrategy};
+#[cfg(feature = "whisper")]
+use hound;
+
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct VideoFile {
@@ -121,6 +126,105 @@ async fn download_ffmpeg(app: AppHandle) -> Result<String, String> {
 
     Ok(ffmpeg_path.to_string_lossy().to_string())
 }
+
+#[tauri::command]
+#[cfg(feature = "whisper")]
+async fn download_whisper_model(app: AppHandle, model_name: String) -> Result<String, String> {
+    let app_dir = get_app_dir();
+    let models_dir = app_dir.join("models");
+    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+
+    let model_filename = format!("ggml-{}.bin", model_name);
+    let model_path = models_dir.join(&model_filename);
+
+    if model_path.exists() {
+        return Ok(model_path.to_string_lossy().to_string());
+    }
+
+    let url = format!(
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}?download=true",
+        model_filename
+    );
+
+    let mut file = File::create(&model_path).map_err(|e| e.to_string())?;
+    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = futures_util::stream::TryStreamExt::try_next(&mut stream)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        file.write_all(&chunk).map_err(|e| e.to_string())?;
+    }
+
+    Ok(model_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+#[cfg(feature = "whisper")]
+async fn transcribe_audio_local(
+    app: AppHandle,
+    audio_path: String,
+    model_name: String,
+    language: Option<String>,
+) -> Result<Vec<SubtitleCue>, String> {
+    let app_dir = get_app_dir();
+    let models_dir = app_dir.join("models");
+    let model_path = models_dir.join(format!("ggml-{}.bin", model_name));
+
+    if !model_path.exists() {
+        download_whisper_model(app, model_name).await?;
+    }
+
+    let ctx = WhisperContext::new(&model_path.to_string_lossy())
+        .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
+
+    let mut reader = hound::WavReader::open(audio_path)
+        .map_err(|e| format!("Failed to open audio file: {}", e))?;
+
+    let spec = reader.spec();
+    if spec.sample_rate != 16000 || spec.channels != 1 || spec.bits_per_sample != 16 {
+        return Err("Audio file must be 16kHz, mono, 16-bit PCM WAV".to_string());
+    }
+
+    let samples: Vec<i16> = reader.samples().map(|s| s.unwrap()).collect();
+    let samples_f32: Vec<f32> = samples.iter().map(|&x| x as f32 / i16::MAX as f32).collect();
+
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_single_segment(true);
+    params.set_translate(false);
+    params.set_language(language.as_deref());
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+
+    let mut state = ctx.create_state().map_err(|e| e.to_string())?;
+    state.full(params, &samples_f32).map_err(|e| e.to_string())?;
+
+    let num_segments = state.full_n_segments();
+    let mut cues = Vec::new();
+
+    for i in 0..num_segments {
+        let start = state.full_get_segment_t0(i) as f64 / 100.0;
+        let end = state.full_get_segment_t1(i) as f64 / 100.0;
+        let text = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
+
+        if text.trim().is_empty() {
+            continue;
+        }
+
+        cues.push(SubtitleCue {
+            id: uuid::Uuid::new_v4().to_string(),
+            start_time: start,
+            end_time: end,
+            text,
+        });
+    }
+
+    Ok(cues)
+}
+
 
 #[tauri::command]
 async fn open_video_dialog(app: AppHandle) -> Result<Option<VideoFile>, String> {
@@ -499,14 +603,18 @@ pub fn run() {
         .plugin(tauri_plugin_path::init())
         .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
-            open_video_dialog,
-            open_subtitle_dialog,
-            save_subtitle_dialog,
-            read_subtitle_file,
-            write_subtitle_file,
-            extract_audio,
-            download_ffmpeg,
-        ])
+        open_video_dialog,
+        open_subtitle_dialog,
+        save_subtitle_dialog,
+        read_subtitle_file,
+        write_subtitle_file,
+        extract_audio,
+        download_ffmpeg,
+        #[cfg(feature = "whisper")]
+        download_whisper_model,
+        #[cfg(feature = "whisper")]
+        transcribe_audio_local,
+    ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
