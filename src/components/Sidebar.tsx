@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useAppStore } from "../services/store";
 import {
   MicLanguages,
@@ -12,6 +12,7 @@ import {
   List,
   FileText,
   Plus,
+  FileVideo,
 } from "lucide-react";
 import { OpenAIService } from "../services/openai";
 import { TauriService } from "../services/tauri";
@@ -44,13 +45,17 @@ export const Sidebar = () => {
     shiftAllCues,
     deleteCue,
     addCue,
+    progressStep,
+    progressPercent,
+    setProgress,
+    setSeekTo,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<Tab>("main");
-  const [workflowStep, setWorkflowStep] = useState<WorkflowStep>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [targetLanguage, setTargetLanguage] = useState(defaultTargetLanguage);
   const [shiftOffset, setShiftOffset] = useState<string>("0");
   const [showExportOptions, setShowExportOptions] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   const languages = [
     "Burmese",
@@ -69,6 +74,109 @@ export const Sidebar = () => {
     "Thai",
     "Vietnamese",
   ];
+
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  }, []);
+
+  const onDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    setErrorMessage(null);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      if (file.type.startsWith("video/")) {
+        setCurrentVideo(file);
+        const url = URL.createObjectURL(file);
+        setCurrentVideoUrl(url);
+        setCurrentVideoPath(null);
+      } else if (file.name.endsWith(".srt") || file.name.endsWith(".vtt")) {
+        // Handle subtitle file
+        try {
+          const text = await file.text();
+          let cues;
+          if (file.name.endsWith(".srt")) {
+            cues = parseSRT(text);
+          } else {
+            cues = parseVTT(text);
+          }
+          const track: SubtitleTrack = {
+            id: `track-${Date.now()}`,
+            name: file.name,
+            language: "Unknown",
+            cues,
+          };
+          setSubtitleTracks([...subtitleTracks, track]);
+          setActiveSubtitleTrackId(track.id);
+        } catch (err) {
+          setErrorMessage(`Error reading subtitle file: ${(err as Error).message}`);
+        }
+      }
+    }
+  }, [currentVideo, subtitleTracks]);
+
+  const parseSRT = (text: string) => {
+    const cues: any[] = [];
+    const blocks = text.trim().split(/\n\n+/);
+    blocks.forEach(block => {
+      const lines = block.split('\n');
+      if (lines.length >= 3) {
+        const timeLine = lines[1];
+        const timeMatch = timeLine.match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})/);
+        if (timeMatch) {
+          const startTime = parseFloat(timeMatch[1])*3600 + parseFloat(timeMatch[2])*60 + parseFloat(timeMatch[3]) + parseFloat(timeMatch[4])/1000;
+          const endTime = parseFloat(timeMatch[5])*3600 + parseFloat(timeMatch[6])*60 + parseFloat(timeMatch[7]) + parseFloat(timeMatch[8])/1000;
+          const text = lines.slice(2).join('\n');
+          cues.push({
+            id: `cue-${Date.now()}-${Math.random()}`,
+            startTime,
+            endTime,
+            text,
+          });
+        }
+      }
+    });
+    return cues;
+  };
+
+  const parseVTT = (text: string) => {
+    const cues: any[] = [];
+    const lines = text.split('\n');
+    let i = 0;
+    while (i < lines.length && !lines[i].includes('-->')) {
+      i++;
+    }
+    while (i < lines.length) {
+      const timeLine = lines[i];
+      const timeMatch = timeLine.match(/(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
+      if (timeMatch) {
+        const startTime = parseFloat(timeMatch[1])*3600 + parseFloat(timeMatch[2])*60 + parseFloat(timeMatch[3]) + parseFloat(timeMatch[4])/1000;
+        const endTime = parseFloat(timeMatch[5])*3600 + parseFloat(timeMatch[6])*60 + parseFloat(timeMatch[7]) + parseFloat(timeMatch[8])/1000;
+        i++;
+        let cueText = '';
+        while (i < lines.length && lines[i].trim() !== '' && !lines[i].includes('-->')) {
+          cueText += (cueText ? '\n' : '') + lines[i];
+          i++;
+        }
+        cues.push({
+          id: `cue-${Date.now()}-${Math.random()}`,
+          startTime,
+          endTime,
+          text: cueText.trim(),
+        });
+      } else {
+        i++;
+      }
+    }
+    return cues;
+  };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -128,15 +236,17 @@ export const Sidebar = () => {
       return;
     }
 
-    setWorkflowStep("extracting");
+    setProgress("extracting", 0);
     setErrorMessage(null);
     let audioFile: File | null = null;
 
     try {
       if (currentVideoPath) {
         const audioPath = await TauriService.extractAudio(currentVideoPath);
+        setProgress("extracting", 50);
         const audioBlob = await TauriService.readFileAsBlob(audioPath);
         audioFile = new File([audioBlob], "extracted_audio.wav", { type: "audio/wav" });
+        setProgress("extracting", 100);
       } else if (currentVideo) {
         audioFile = currentVideo;
       }
@@ -145,9 +255,10 @@ export const Sidebar = () => {
         throw new Error("No audio file available");
       }
 
-      setWorkflowStep("transcribing");
+      setProgress("transcribing", 0);
       const service = new OpenAIService(apiKey);
       const cues = await service.transcribeAudio(audioFile);
+      setProgress("transcribing", 100);
 
       const newTrack: SubtitleTrack = {
         id: `track-${Date.now()}`,
@@ -159,11 +270,11 @@ export const Sidebar = () => {
 
       setSubtitleTracks([...subtitleTracks, newTrack]);
       setActiveSubtitleTrackId(newTrack.id);
-      setWorkflowStep("completed");
+      setTimeout(() => setProgress("idle", 0), 1500);
     } catch (error) {
       console.error("Subtitle generation error:", error);
       setErrorMessage(`Error: ${(error as Error).message}`);
-      setWorkflowStep("idle");
+      setProgress("idle", 0);
     }
   };
 
@@ -179,11 +290,13 @@ export const Sidebar = () => {
       return;
     }
 
-    setWorkflowStep("translating");
+    setProgress("translating", 0);
     setErrorMessage(null);
     try {
       const service = new OpenAIService(apiKey);
+      setProgress("translating", 50);
       const translatedCues = await service.batchTranslate(activeTrack.cues, targetLanguage);
+      setProgress("translating", 100);
 
       const newTrack: SubtitleTrack = {
         id: `translated-${Date.now()}`,
@@ -196,12 +309,11 @@ export const Sidebar = () => {
       const updatedTracks = [...subtitleTracks, newTrack];
       setSubtitleTracks(updatedTracks);
       setActiveTranslatedTrackId(newTrack.id);
-      setWorkflowStep("completed");
+      setTimeout(() => setProgress("idle", 0), 1500);
     } catch (error) {
       console.error("Translation error:", error);
       setErrorMessage(`Translation error: ${(error as Error).message}`);
-    } finally {
-      setWorkflowStep("idle");
+      setProgress("idle", 0);
     }
   };
 
@@ -261,23 +373,19 @@ export const Sidebar = () => {
   };
 
   const getStepText = () => {
-    switch (workflowStep) {
-      case "selecting":
-        return "Selecting video...";
+    switch (progressStep) {
       case "extracting":
         return "Extracting audio...";
       case "transcribing":
         return "Transcribing audio...";
       case "translating":
         return "Translating subtitles...";
-      case "completed":
-        return "Completed!";
       default:
         return "";
     }
   };
 
-  const isProcessing = workflowStep !== "idle" && workflowStep !== "completed";
+  const isProcessing = progressStep !== "idle";
   const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
   const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
   const hasTracks = originalTrack || translatedTrack;
@@ -287,7 +395,21 @@ export const Sidebar = () => {
   }
 
   return (
-    <div className="w-96 bg-gray-900 border-r border-gray-700 flex flex-col h-full">
+    <div 
+      className="w-96 bg-gray-900 border-r border-gray-700 flex flex-col h-full relative"
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {/* Drag & Drop Overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-blue-500/20 border-4 border-dashed border-blue-500 flex items-center justify-center">
+          <div className="text-center text-white">
+            <FileVideo className="w-16 h-16 mx-auto mb-4" />
+            <p className="text-xl font-semibold">Drop video or subtitle file</p>
+          </div>
+        </div>
+      )}
       {/* Tab Bar */}
       <div className="flex border-b border-gray-700">
         <button
@@ -350,10 +472,22 @@ export const Sidebar = () => {
                 <p className="text-red-300 text-sm">{errorMessage}</p>
               </div>
             )}
-            {workflowStep === "completed" && (
+            {progressPercent === 100 && progressStep !== "idle" && (
               <div className="mb-4 p-3 bg-green-500/10 border border-green-500/20 rounded-lg flex items-center gap-2">
                 <CheckCircle2 className="w-5 h-5 text-green-400" />
                 <p className="text-green-300 text-sm">Completed successfully!</p>
+              </div>
+            )}
+            {/* Progress Bar */}
+            {isProcessing && (
+              <div className="mb-4">
+                <p className="text-sm text-gray-300 mb-2">{getStepText()}</p>
+                <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-500 to-blue-700 transition-all duration-300"
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
               </div>
             )}
 
@@ -576,7 +710,8 @@ export const Sidebar = () => {
               return (
                 <div
                   key={originalCue.id}
-                  className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-gray-600 transition-all"
+                  className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-blue-500 hover:bg-gray-750 cursor-pointer transition-all"
+                  onClick={() => setSeekTo(originalCue.startTime)}
                 >
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs text-gray-500 font-mono">
@@ -666,7 +801,8 @@ export const Sidebar = () => {
             {!originalTrack && translatedTrack?.cues.map((cue) => (
               <div
                 key={cue.id}
-                className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-gray-600 transition-all"
+                className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-blue-500 hover:bg-gray-750 cursor-pointer transition-all"
+                onClick={() => setSeekTo(cue.startTime)}
               >
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xs text-gray-500 font-mono">

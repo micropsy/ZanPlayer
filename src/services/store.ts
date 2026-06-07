@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import type { SubtitleTrack, SubtitleCue } from "../types/subtitle";
 
 export type SubtitleDisplayMode = "original" | "translated" | "dual";
+export type ProgressStep = "idle" | "extracting" | "transcribing" | "translating";
 
 interface AppState {
   currentVideo: File | null;
@@ -28,6 +29,14 @@ interface AppState {
   shiftAllCues: (trackId: string, offset: number) => void;
   deleteCue: (trackId: string, cueId: string) => void;
   addCue: (trackId: string, cue: SubtitleCue) => void;
+
+  // Progress
+  progressStep: ProgressStep;
+  progressPercent: number;
+  setProgress: (step: ProgressStep, percent: number) => void;
+  // Seek
+  seekTo: number | null;
+  setSeekTo: (time: number | null) => void;
 
   // Settings
   apiKey: string;
@@ -120,6 +129,14 @@ export const useAppStore = create<AppState>()(
               : track
           ),
         })),
+
+      // Progress
+  progressStep: "idle",
+  progressPercent: 0,
+  setProgress: (step, percent) => set({ progressStep: step, progressPercent: percent }),
+  // Seek
+  seekTo: null,
+  setSeekTo: (time) => set({ seekTo: time }),
 
       // Settings
       apiKey: "",

@@ -30,6 +30,8 @@ export const VideoPlayer = () => {
     activeSubtitleTrackId,
     activeTranslatedTrackId,
     subtitleDisplayMode,
+    seekTo,
+    setSeekTo,
   } = useAppStore();
 
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -172,6 +174,14 @@ export const VideoPlayer = () => {
     document.addEventListener("fullscreenchange", handleFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
+
+  // Handle seeking from store
+  useEffect(() => {
+    if (seekTo !== null && videoRef.current) {
+      videoRef.current.currentTime = seekTo;
+      setSeekTo(null); // Reset after seeking
+    }
+  }, [seekTo, setSeekTo]);
 
   const getCurrentCue = (track: typeof originalTrack) => {
     if (!track || !videoRef.current) return null;
