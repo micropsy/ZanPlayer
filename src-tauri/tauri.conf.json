@@ -31,7 +31,6 @@
       "scope": ["**/*"]
     },
     "dialog": {},
-    "path": {},
     "http": {}
   },
   "bundle": {
