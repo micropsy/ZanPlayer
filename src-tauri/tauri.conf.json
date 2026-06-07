@@ -26,9 +26,6 @@
     "shell": {
       "sidecar": true,
       "open": true
-    },
-    "fs": {
-      "scope": ["**/*"]
     }
   },
   "bundle": {
