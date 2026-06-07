@@ -29,9 +29,7 @@
     },
     "fs": {
       "scope": ["**/*"]
-    },
-    "dialog": {},
-    "http": {}
+    }
   },
   "bundle": {
     "active": true,
