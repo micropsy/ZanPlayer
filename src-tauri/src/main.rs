@@ -15,7 +15,6 @@ use whisper_rs::{WhisperContext, FullParams, SamplingStrategy, WhisperContextPar
 use hound;
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
-use tauri_plugin_fs::FilePath;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct VideoFile {
@@ -189,11 +188,11 @@ async fn transcribe_audio_local(
     let mut state = ctx.create_state().map_err(|e| e.to_string())?;
     state.full(params, &samples_f32).map_err(|e| e.to_string())?;
 
-    let num_segments = state.full_n_segments();
+    let num_segments = state.full_n_segments().map_err(|e| e.to_string())?;
     let mut cues = Vec::new();
     for i in 0..num_segments {
-        let start = state.full_get_segment_t0(i) as f64 / 100.0;
-        let end = state.full_get_segment_t1(i) as f64 / 100.0;
+        let start = state.full_get_segment_t0(i).map_err(|e| e.to_string())? as f64 / 100.0;
+        let end = state.full_get_segment_t1(i).map_err(|e| e.to_string())? as f64 / 100.0;
         let text = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
 
         if text.trim().is_empty() {
@@ -576,8 +575,7 @@ async fn extract_audio(
     Ok(output_path.to_string_lossy().to_string())
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
