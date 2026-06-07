@@ -19,22 +19,20 @@
       }
     ],
     "security": {
-      "csp": null,
-      "scope": {
-        "allow": [
-          {
-            "shell": {
-              "sidecar": true,
-              "open": true
-            },
-            "fs": {
-              "read": true,
-              "write": true
-            }
-          }
-        ]
-      }
+      "csp": null
     }
+  },
+  "plugins": {
+    "shell": {
+      "sidecar": true,
+      "open": true
+    },
+    "fs": {
+      "scope": ["**/*"]
+    },
+    "dialog": {},
+    "path": {},
+    "http": {}
   },
   "bundle": {
     "active": true,
