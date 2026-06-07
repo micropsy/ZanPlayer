@@ -32,6 +32,7 @@ export const VideoPlayer = () => {
     subtitleDisplayMode,
     seekTo,
     setSeekTo,
+    subtitleStyle,
   } = useAppStore();
 
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -227,23 +228,43 @@ export const VideoPlayer = () => {
 
           {/* Subtitle Overlay */}
           {(currentOriginalCue || currentTranslatedCue) && (
-            <div className="absolute bottom-24 left-0 right-0 flex flex-col items-center px-4 pointer-events-none">
+            <div
+              className={cn(
+                "absolute left-0 right-0 flex flex-col items-center px-4 pointer-events-none",
+                subtitleStyle.alignment === "bottom" ? "bottom-24" : "top-24"
+              )}
+            >
               {subtitleDisplayMode !== "translated" && currentOriginalCue && (
                 <div
                   className={cn(
-                    "bg-black/75 text-white px-6 py-2 rounded-lg text-lg font-medium max-w-3xl text-center",
+                    "px-6 py-2 rounded-lg text-center max-w-3xl",
                     subtitleDisplayMode === "dual" && "mb-2"
                   )}
+                  style={{
+                    fontFamily: subtitleStyle.fontName,
+                    fontSize: `${subtitleStyle.fontSize}px`,
+                    color: subtitleStyle.primaryColor,
+                    backgroundColor: subtitleStyle.backColor,
+                    textShadow: `2px 2px 4px ${subtitleStyle.outlineColor}`,
+                    fontWeight: subtitleStyle.bold ? "bold" : "normal",
+                    fontStyle: subtitleStyle.italic ? "italic" : "normal",
+                  }}
                 >
                   {currentOriginalCue.text}
                 </div>
               )}
               {subtitleDisplayMode !== "original" && currentTranslatedCue && (
                 <div
-                  className={cn(
-                    "bg-blue-900/75 text-white px-6 py-2 rounded-lg text-xl font-semibold max-w-3xl text-center",
-                    subtitleDisplayMode === "dual" && "text-yellow-300"
-                  )}
+                  className="px-6 py-2 rounded-lg text-center max-w-3xl"
+                  style={{
+                    fontFamily: subtitleStyle.fontName,
+                    fontSize: `${subtitleStyle.fontSize}px`,
+                    color: "#FFD700",
+                    backgroundColor: subtitleStyle.backColor,
+                    textShadow: `2px 2px 4px ${subtitleStyle.outlineColor}`,
+                    fontWeight: subtitleStyle.bold ? "bold" : "normal",
+                    fontStyle: subtitleStyle.italic ? "italic" : "normal",
+                  }}
                 >
                   {currentTranslatedCue.text}
                 </div>
