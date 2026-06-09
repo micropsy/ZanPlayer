@@ -32,6 +32,6 @@ regex = "1.10"
 hound = "3.5"
 
 [features]
-default = ["custom-protocol"]
+default = ["custom-protocol", "whisper"]
 custom-protocol = ["tauri/custom-protocol"]
 whisper = ["whisper-rs"]

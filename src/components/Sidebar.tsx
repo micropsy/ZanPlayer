@@ -1,7 +1,6 @@
-import { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import { useAppStore } from "../services/store";
 import {
-  MicLanguages,
   Languages,
   Upload,
   AlertCircle,
@@ -13,6 +12,7 @@ import {
   FileText,
   Plus,
   FileVideo,
+  Menu,
 } from "lucide-react";
 import { OpenAIService } from "../services/openai";
 import { TauriService } from "../services/tauri";
@@ -20,7 +20,6 @@ import { SettingsComponent } from "./Settings";
 import { cn } from "../utils/cn";
 import type { SubtitleTrack } from "../types/subtitle";
 
-type WorkflowStep = "idle" | "selecting" | "extracting" | "transcribing" | "translating" | "completed";
 type Tab = "main" | "settings" | "editor";
 
 export const Sidebar = () => {
@@ -37,9 +36,7 @@ export const Sidebar = () => {
     currentVideoPath,
     setCurrentVideoPath,
     apiKey,
-    setApiKey,
     defaultTargetLanguage,
-    setDefaultTargetLanguage,
     updateCue,
     updateCueTiming,
     shiftAllCues,
@@ -51,6 +48,8 @@ export const Sidebar = () => {
     useLocalWhisper,
     whisperModel,
     setSeekTo,
+    theme,
+    setSidebarVisible,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<Tab>("main");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -182,17 +181,49 @@ export const Sidebar = () => {
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file && file.type.startsWith("video/")) {
-      setCurrentVideo(file);
-      const url = URL.createObjectURL(file);
-      setCurrentVideoUrl(url);
-      setCurrentVideoPath(null);
-      setErrorMessage(null);
+    if (file) {
+      if (file.type.startsWith("video/")) {
+        setCurrentVideo(file);
+        const url = URL.createObjectURL(file);
+        setCurrentVideoUrl(url);
+        setCurrentVideoPath(null);
+        setErrorMessage(null);
+      } else if (file.name.endsWith(".srt") || file.name.endsWith(".vtt")) {
+        // Handle subtitle file
+        try {
+          file.text().then(text => {
+            let cues;
+            if (file.name.endsWith(".srt")) {
+              cues = parseSRT(text);
+            } else {
+              cues = parseVTT(text);
+            }
+            const track: SubtitleTrack = {
+              id: `track-${Date.now()}`,
+              name: file.name,
+              language: "Unknown",
+              cues,
+            };
+            setSubtitleTracks([...subtitleTracks, track]);
+            setActiveSubtitleTrackId(track.id);
+          });
+        } catch (error) {
+          setErrorMessage(`Error reading subtitle file: ${(error as Error).message}`);
+        }
+      }
     }
   };
 
+  const isTauriApp = typeof window !== "undefined" && (window as any).__TAURI__ !== undefined;
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const subtitleFileInputRef = useRef<HTMLInputElement>(null);
+
   const handleNativeVideoSelect = async () => {
-    setWorkflowStep("selecting");
+    if (!isTauriApp) {
+      fileInputRef.current?.click();
+      return;
+    }
+    setProgress("selecting" as any, 0);
     setErrorMessage(null);
     try {
       const videoFile = await TauriService.openVideoDialog();
@@ -204,11 +235,15 @@ export const Sidebar = () => {
     } catch (error) {
       setErrorMessage(`Error selecting video: ${(error as Error).message}`);
     } finally {
-      setWorkflowStep("idle");
+      setProgress("idle", 0);
     }
   };
 
   const handleLoadSubtitleFile = async () => {
+    if (!isTauriApp) {
+      subtitleFileInputRef.current?.click();
+      return;
+    }
     try {
       const filePath = await TauriService.openSubtitleDialog();
       if (filePath) {
@@ -242,6 +277,7 @@ export const Sidebar = () => {
     setErrorMessage(null);
     let audioFile: File | null = null;
     let extractedAudioPath: string | null = null;
+    let tempVideoPath: string | null = null;
 
     try {
       if (currentVideoPath) {
@@ -254,7 +290,20 @@ export const Sidebar = () => {
         }
         setProgress("extracting", 100);
       } else if (currentVideo) {
-        audioFile = currentVideo;
+        if (useLocalWhisper) {
+          // For local whisper with uploaded file, we need to write it to disk first
+          setProgress("saving", 25);
+          const fileArrayBuffer = await currentVideo.arrayBuffer();
+          const fileUint8Array = new Uint8Array(fileArrayBuffer);
+          tempVideoPath = await TauriService.writeFile(currentVideo.name, fileUint8Array);
+          setProgress("extracting", 50);
+          
+          const audioPath = await TauriService.extractAudio(tempVideoPath);
+          extractedAudioPath = audioPath;
+          setProgress("extracting", 100);
+        } else {
+          audioFile = currentVideo;
+        }
       }
 
       setProgress("transcribing", 0);
@@ -407,13 +456,16 @@ export const Sidebar = () => {
   const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
   const hasTracks = originalTrack || translatedTrack;
 
-  if (activeTab === "settings") {
-    return <SettingsComponent />;
-  }
+
 
   return (
     <div 
-      className="w-96 bg-gray-900 border-r border-gray-700 flex flex-col h-full relative"
+      className={cn(
+        "w-96 border-r flex flex-col h-full relative",
+        theme === "dark" 
+          ? "bg-gray-900 border-gray-700" 
+          : "bg-white border-gray-200"
+      )}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -427,15 +479,28 @@ export const Sidebar = () => {
           </div>
         </div>
       )}
-      {/* Tab Bar */}
-      <div className="flex border-b border-gray-700">
+      {/* Header Row */}
+      <div className={cn(
+        "flex items-center border-b",
+        theme === "dark" ? "border-gray-700" : "border-gray-200"
+      )}>
+        {/* App Logo */}
+        <div className="flex items-center gap-2 px-2">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+            <Languages className="w-5 h-5 text-white" />
+          </div>
+        </div>
         <button
           onClick={() => setActiveTab("main")}
           className={cn(
             "flex-1 py-3 px-4 text-sm font-medium transition-colors",
             activeTab === "main"
-              ? "bg-gray-800 text-white border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-300"
+              ? theme === "dark"
+                ? "bg-gray-800 text-white border-b-2 border-blue-500"
+                : "bg-gray-100 text-gray-900 border-b-2 border-blue-500"
+              : theme === "dark"
+                ? "text-gray-500 hover:text-gray-300"
+                : "text-gray-500 hover:text-gray-700"
           )}
         >
           <div className="flex items-center justify-center gap-2">
@@ -449,8 +514,12 @@ export const Sidebar = () => {
             className={cn(
               "flex-1 py-3 px-4 text-sm font-medium transition-colors",
               activeTab === "editor"
-                ? "bg-gray-800 text-white border-b-2 border-blue-500"
-                : "text-gray-500 hover:text-gray-300"
+                ? theme === "dark"
+                  ? "bg-gray-800 text-white border-b-2 border-blue-500"
+                  : "bg-gray-100 text-gray-900 border-b-2 border-blue-500"
+                : theme === "dark"
+                  ? "text-gray-500 hover:text-gray-300"
+                  : "text-gray-500 hover:text-gray-700"
             )}
           >
             <div className="flex items-center justify-center gap-2">
@@ -463,24 +532,47 @@ export const Sidebar = () => {
           onClick={() => setActiveTab("settings")}
           className={cn(
             "p-3 transition-colors",
-            activeTab === "settings"
-              ? "bg-gray-800 text-white border-b-2 border-blue-500"
-              : "text-gray-500 hover:text-gray-300"
+            (activeTab as Tab) === "settings"
+              ? theme === "dark"
+                ? "bg-gray-800 text-white border-b-2 border-blue-500"
+                : "bg-gray-100 text-gray-900 border-b-2 border-blue-500"
+              : theme === "dark"
+                ? "text-gray-500 hover:text-gray-300"
+                : "text-gray-500 hover:text-gray-700"
           )}
         >
           <SettingsIcon className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => setSidebarVisible(false)}
+          className={cn(
+            "p-3 transition-colors",
+            theme === "dark"
+              ? "hover:bg-gray-800 text-gray-400 hover:text-white"
+              : "hover:bg-gray-100 text-gray-500 hover:text-gray-700"
+          )}
+        >
+          <Menu className="w-5 h-5" />
         </button>
       </div>
 
       {activeTab === "main" && (
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="p-6 border-b border-gray-700 bg-gradient-to-b from-gray-800 to-gray-900">
-            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-                <MicLanguages className="w-5 h-5 text-white" />
-              </div>
-              Sub Player
-            </h2>
+          <div className={cn(
+            "p-6 border-b",
+            theme === "dark"
+              ? "border-gray-700 bg-gradient-to-b from-gray-800 to-gray-900"
+              : "border-gray-200 bg-gradient-to-b from-gray-50 to-white"
+          )}>
+            <h2 className={cn(
+              "text-2xl font-bold mb-4 flex items-center gap-2",
+              theme === "dark" ? "text-white" : "text-gray-900"
+            )}>
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+              <Languages className="w-5 h-5 text-white" />
+            </div>
+            Sub Player
+          </h2>
 
             {/* Error/Success Messages */}
             {errorMessage && (
@@ -498,8 +590,14 @@ export const Sidebar = () => {
             {/* Progress Bar */}
             {isProcessing && (
               <div className="mb-4">
-                <p className="text-sm text-gray-300 mb-2">{getStepText()}</p>
-                <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                <p className={cn(
+                  "text-sm mb-2",
+                  theme === "dark" ? "text-gray-300" : "text-gray-600"
+                )}>{getStepText()}</p>
+                <div className={cn(
+                  "h-2 rounded-full overflow-hidden",
+                  theme === "dark" ? "bg-gray-700" : "bg-gray-200"
+                )}>
                   <div
                     className="h-full bg-gradient-to-r from-blue-500 to-blue-700 transition-all duration-300"
                     style={{ width: `${progressPercent}%` }}
@@ -517,15 +615,28 @@ export const Sidebar = () => {
                 <Upload className="w-5 h-5" />
                 Select Video
               </button>
-              <label className="flex items-center justify-center gap-2 px-4 py-2 text-gray-400 hover:text-white text-sm cursor-pointer">
+              <label className={cn(
+                "flex items-center justify-center gap-2 px-4 py-2 text-sm cursor-pointer",
+                theme === "dark"
+                  ? "text-gray-400 hover:text-white"
+                  : "text-gray-500 hover:text-gray-700"
+              )}>
                 or upload a file
                 <input
+                  ref={fileInputRef}
                   type="file"
                   accept="video/*"
                   className="hidden"
                   onChange={handleFileInputChange}
                 />
               </label>
+              <input
+                ref={subtitleFileInputRef}
+                type="file"
+                accept=".srt,.vtt"
+                className="hidden"
+                onChange={handleFileInputChange}
+              />
             </div>
 
             {/* Controls */}
@@ -535,18 +646,26 @@ export const Sidebar = () => {
                 disabled={isProcessing || (!currentVideo && !currentVideoPath)}
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-gray-600 disabled:to-gray-700 text-white rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] shadow-lg shadow-green-900/20"
               >
-                <MicLanguages className="w-5 h-5" />
+                <Languages className="w-5 h-5" />
                 {getStepText() || "Auto-Transcribe"}
               </button>
 
               <div className="space-y-2">
-                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                <label className={cn(
+                  "block text-xs font-semibold uppercase tracking-wider",
+                  theme === "dark" ? "text-gray-400" : "text-gray-500"
+                )}>
                   Target Language
                 </label>
                 <select
                   value={targetLanguage}
                   onChange={(e) => setTargetLanguage(e.target.value)}
-                  className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-xl text-white focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+                  className={cn(
+                    "w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2",
+                    theme === "dark"
+                      ? "bg-gray-800 border-gray-700 text-white focus:border-blue-500 focus:ring-blue-500/20"
+                      : "bg-white border-gray-300 text-gray-900 focus:border-blue-500 focus:ring-blue-500/20"
+                  )}
                 >
                   {languages.map((lang) => (
                     <option key={lang} value={lang}>{lang}</option>
@@ -560,13 +679,18 @@ export const Sidebar = () => {
                 className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-purple-600 to-violet-600 hover:from-purple-500 hover:to-violet-500 disabled:from-gray-600 disabled:to-gray-700 text-white rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] shadow-lg shadow-purple-900/20"
               >
                 <Languages className="w-5 h-5" />
-                {workflowStep === "translating" ? "Translating..." : "Auto-Translate"}
+                {progressStep === "translating" ? "Translating..." : "Auto-Translate"}
               </button>
 
               <button
                 onClick={handleLoadSubtitleFile}
                 disabled={isProcessing}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl transition-all"
+                className={cn(
+                  "w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl transition-all",
+                  theme === "dark"
+                    ? "bg-gray-800 hover:bg-gray-700 text-white"
+                    : "bg-gray-100 hover:bg-gray-200 text-gray-900"
+                )}
               >
                 <FileText className="w-5 h-5" />
                 Load Subtitle File
@@ -584,28 +708,45 @@ export const Sidebar = () => {
                   </button>
 
                   {showExportOptions && (
-                    <div className="absolute bottom-full left-0 right-0 mb-2 bg-gray-800 border border-gray-700 rounded-xl shadow-2xl overflow-hidden z-10">
+                    <div className={cn(
+                      "absolute bottom-full left-0 right-0 mb-2 border rounded-xl shadow-2xl overflow-hidden z-10",
+                      theme === "dark"
+                        ? "bg-gray-800 border-gray-700"
+                        : "bg-white border-gray-200"
+                    )}>
                       <button
                         onClick={() => handleExport("srt")}
-                        className="w-full px-4 py-3 text-left hover:bg-gray-700 transition-colors flex items-center gap-3"
+                        className={cn(
+                          "w-full px-4 py-3 text-left transition-colors flex items-center gap-3",
+                          theme === "dark" ? "hover:bg-gray-700" : "hover:bg-gray-100"
+                        )}
                       >
                         <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
                           <span className="text-xs font-bold text-white">SRT</span>
                         </div>
                         <div>
-                          <p className="font-semibold text-white">Export SRT</p>
+                          <p className={cn(
+                            "font-semibold",
+                            theme === "dark" ? "text-white" : "text-gray-900"
+                          )}>Export SRT</p>
                           <p className="text-xs text-gray-400">SubRip format</p>
                         </div>
                       </button>
                       <button
                         onClick={() => handleExport("vtt")}
-                        className="w-full px-4 py-3 text-left hover:bg-gray-700 transition-colors flex items-center gap-3"
+                        className={cn(
+                          "w-full px-4 py-3 text-left transition-colors flex items-center gap-3",
+                          theme === "dark" ? "hover:bg-gray-700" : "hover:bg-gray-100"
+                        )}
                       >
                         <div className="w-8 h-8 bg-purple-600 rounded-lg flex items-center justify-center">
                           <span className="text-xs font-bold text-white">VTT</span>
                         </div>
                         <div>
-                          <p className="font-semibold text-white">Export VTT</p>
+                          <p className={cn(
+                            "font-semibold",
+                            theme === "dark" ? "text-white" : "text-gray-900"
+                          )}>Export VTT</p>
                           <p className="text-xs text-gray-400">WebVTT format</p>
                         </div>
                       </button>
@@ -618,8 +759,16 @@ export const Sidebar = () => {
 
           {/* Subtitle Tracks */}
           <div className="flex-1 overflow-hidden flex flex-col">
-            <div className="p-4 border-b border-gray-700 bg-gray-850">
-              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+            <div className={cn(
+              "p-4 border-b",
+              theme === "dark"
+                ? "border-gray-700 bg-gray-850"
+                : "border-gray-200 bg-gray-50"
+            )}>
+              <h3 className={cn(
+                "text-xs font-semibold uppercase tracking-wider flex items-center gap-2",
+                theme === "dark" ? "text-gray-400" : "text-gray-500"
+              )}>
                 <List className="w-4 h-4" />
                 Subtitle Tracks
               </h3>
@@ -643,7 +792,9 @@ export const Sidebar = () => {
                     "relative p-4 rounded-xl border transition-all cursor-pointer group",
                     (activeSubtitleTrackId === track.id || activeTranslatedTrackId === track.id)
                       ? "bg-blue-900/20 border-blue-500 shadow-lg shadow-blue-900/10"
-                      : "bg-gray-800 border-gray-700 hover:bg-gray-750 hover:border-gray-600"
+                      : theme === "dark"
+                        ? "bg-gray-800 border-gray-700 hover:bg-gray-750 hover:border-gray-600"
+                        : "bg-white border-gray-200 hover:bg-gray-50 hover:border-gray-300"
                   )}
                 >
                   <div className="flex items-start justify-between mb-2">
@@ -652,11 +803,16 @@ export const Sidebar = () => {
                         "font-semibold text-sm",
                         (activeSubtitleTrackId === track.id || activeTranslatedTrackId === track.id)
                           ? "text-blue-300"
-                          : "text-white"
+                          : theme === "dark"
+                            ? "text-white"
+                            : "text-gray-900"
                       )}>
                         {track.name}
                       </h4>
-                      <p className="text-xs text-gray-500 mt-0.5">{track.cues.length} cues</p>
+                      <p className={cn(
+                        "text-xs mt-0.5",
+                        theme === "dark" ? "text-gray-500" : "text-gray-400"
+                      )}>{track.cues.length} cues</p>
                     </div>
                     <div className="flex items-center gap-1">
                       {track.isGenerated && (
@@ -680,15 +836,26 @@ export const Sidebar = () => {
 
                   {/* Shift controls for original track */}
                   {!track.isTranslated && (
-                    <div className="mt-2 pt-2 border-t border-gray-700">
-                      <label className="text-xs text-gray-500 mb-1 block">Shift all (seconds)</label>
+                    <div className={cn(
+                      "mt-2 pt-2 border-t",
+                      theme === "dark" ? "border-gray-700" : "border-gray-200"
+                    )}>
+                      <label className={cn(
+                        "text-xs mb-1 block",
+                        theme === "dark" ? "text-gray-500" : "text-gray-500"
+                      )}>Shift all (seconds)</label>
                       <div className="flex gap-2">
                         <input
                           type="number"
                           value={shiftOffset}
                           onChange={(e) => setShiftOffset(e.target.value)}
                           step="0.1"
-                          className="flex-1 px-2 py-1 bg-gray-900 border border-gray-700 rounded text-white text-sm"
+                          className={cn(
+                            "flex-1 px-2 py-1 border rounded text-sm",
+                            theme === "dark"
+                              ? "bg-gray-900 border-gray-700 text-white"
+                              : "bg-white border-gray-300 text-gray-900"
+                          )}
                         />
                         <button
                           onClick={() => handleShiftAllCues(track.id)}
@@ -702,9 +869,15 @@ export const Sidebar = () => {
                 </div>
               ))}
               {subtitleTracks.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-12 text-gray-500">
-                  <div className="w-12 h-12 bg-gray-800 rounded-full flex items-center justify-center mb-3">
-                    <MicLanguages className="w-6 h-6 opacity-50" />
+                <div className={cn(
+                  "flex flex-col items-center justify-center py-12",
+                  theme === "dark" ? "text-gray-500" : "text-gray-400"
+                )}>
+                  <div className={cn(
+                    "w-12 h-12 rounded-full flex items-center justify-center mb-3",
+                    theme === "dark" ? "bg-gray-800" : "bg-gray-100"
+                  )}>
+                    <Languages className="w-6 h-6 opacity-50" />
                   </div>
                   <p className="text-sm">No subtitle tracks yet</p>
                 </div>
@@ -716,8 +889,16 @@ export const Sidebar = () => {
 
       {activeTab === "editor" && (
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="p-4 border-b border-gray-700 bg-gray-850">
-            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+          <div className={cn(
+            "p-4 border-b",
+            theme === "dark"
+              ? "border-gray-700 bg-gray-850"
+              : "border-gray-200 bg-gray-50"
+          )}>
+            <h3 className={cn(
+              "text-xs font-semibold uppercase tracking-wider",
+              theme === "dark" ? "text-gray-400" : "text-gray-500"
+            )}>
               Subtitle Editor
             </h3>
           </div>
@@ -727,11 +908,19 @@ export const Sidebar = () => {
               return (
                 <div
                   key={originalCue.id}
-                  className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-blue-500 hover:bg-gray-750 cursor-pointer transition-all"
+                  className={cn(
+                    "rounded-xl p-4 border transition-all cursor-pointer",
+                    theme === "dark"
+                      ? "bg-gray-800 border-gray-700 hover:border-blue-500 hover:bg-gray-750"
+                      : "bg-white border-gray-200 hover:border-blue-500 hover:bg-gray-50"
+                  )}
                   onClick={() => setSeekTo(originalCue.startTime)}
                 >
                   <div className="flex items-center justify-between mb-3">
-                    <span className="text-xs text-gray-500 font-mono">
+                    <span className={cn(
+                      "text-xs font-mono",
+                      theme === "dark" ? "text-gray-500" : "text-gray-400"
+                    )}>
                       {Math.floor(originalCue.startTime / 3600).toString().padStart(2, "0")}:
                       {Math.floor((originalCue.startTime % 3600) / 60).toString().padStart(2, "0")}:
                       {Math.floor(originalCue.startTime % 60).toString().padStart(2, "0")},
@@ -744,7 +933,12 @@ export const Sidebar = () => {
                     </span>
                     <button
                       onClick={() => deleteCue(originalTrack.id, originalCue.id)}
-                      className="p-1 hover:bg-red-500/20 rounded text-gray-500 hover:text-red-400"
+                      className={cn(
+                        "p-1 rounded transition-all",
+                        theme === "dark"
+                          ? "text-gray-500 hover:bg-red-500/20 hover:text-red-400"
+                          : "text-gray-400 hover:bg-red-50 hover:text-red-500"
+                      )}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -759,7 +953,12 @@ export const Sidebar = () => {
                         <textarea
                           value={originalCue.text}
                           onChange={(e) => updateCue(originalTrack.id, originalCue.id, e.target.value)}
-                          className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500 resize-none"
+                          className={cn(
+                            "w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:border-blue-500 resize-none",
+                            theme === "dark"
+                              ? "bg-gray-900 border-gray-700 text-white"
+                              : "bg-white border-gray-300 text-gray-900"
+                          )}
                           rows={2}
                         />
                       </div>
@@ -772,14 +971,22 @@ export const Sidebar = () => {
                         <textarea
                           value={translatedCue.text}
                           onChange={(e) => updateCue(translatedTrack.id, translatedCue.id, e.target.value)}
-                          className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500 resize-none"
+                          className={cn(
+                            "w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:border-blue-500 resize-none",
+                            theme === "dark"
+                              ? "bg-gray-900 border-gray-700 text-white"
+                              : "bg-white border-gray-300 text-gray-900"
+                          )}
                           rows={2}
                         />
                       </div>
                     )}
                   </div>
 
-                  <div className="mt-3 pt-3 border-t border-gray-700 flex gap-2">
+                  <div className={cn(
+                    "mt-3 pt-3 border-t flex gap-2",
+                    theme === "dark" ? "border-gray-700" : "border-gray-200"
+                  )}>
                     <input
                       type="number"
                       step="0.1"
@@ -792,7 +999,12 @@ export const Sidebar = () => {
                           originalCue.endTime
                         )
                       }
-                      className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-white text-sm"
+                      className={cn(
+                        "w-full px-2 py-1 border rounded text-sm",
+                        theme === "dark"
+                          ? "bg-gray-900 border-gray-700 text-white"
+                          : "bg-white border-gray-300 text-gray-900"
+                      )}
                       placeholder="Start time"
                     />
                     <input
@@ -807,7 +1019,12 @@ export const Sidebar = () => {
                           parseFloat(e.target.value) || 0
                         )
                       }
-                      className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-white text-sm"
+                      className={cn(
+                        "w-full px-2 py-1 border rounded text-sm",
+                        theme === "dark"
+                          ? "bg-gray-900 border-gray-700 text-white"
+                          : "bg-white border-gray-300 text-gray-900"
+                      )}
                       placeholder="End time"
                     />
                   </div>
@@ -818,11 +1035,19 @@ export const Sidebar = () => {
             {!originalTrack && translatedTrack?.cues.map((cue) => (
               <div
                 key={cue.id}
-                className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-blue-500 hover:bg-gray-750 cursor-pointer transition-all"
+                className={cn(
+                  "rounded-xl p-4 border transition-all cursor-pointer",
+                  theme === "dark"
+                    ? "bg-gray-800 border-gray-700 hover:border-blue-500 hover:bg-gray-750"
+                    : "bg-white border-gray-200 hover:border-blue-500 hover:bg-gray-50"
+                )}
                 onClick={() => setSeekTo(cue.startTime)}
               >
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-gray-500 font-mono">
+                  <span className={cn(
+                    "text-xs font-mono",
+                    theme === "dark" ? "text-gray-500" : "text-gray-400"
+                  )}>
                     {Math.floor(cue.startTime / 3600).toString().padStart(2, "0")}:
                     {Math.floor((cue.startTime % 3600) / 60).toString().padStart(2, "0")}:
                     {Math.floor(cue.startTime % 60).toString().padStart(2, "0")}
@@ -831,7 +1056,12 @@ export const Sidebar = () => {
                 <textarea
                   value={cue.text}
                   onChange={(e) => updateCue(translatedTrack.id, cue.id, e.target.value)}
-                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500 resize-none"
+                  className={cn(
+                    "w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:border-blue-500 resize-none",
+                    theme === "dark"
+                      ? "bg-gray-900 border-gray-700 text-white"
+                      : "bg-white border-gray-300 text-gray-900"
+                  )}
                   rows={2}
                 />
               </div>
@@ -852,13 +1082,24 @@ export const Sidebar = () => {
                   };
                   addCue(originalTrack.id, newCue);
                 }}
-                className="w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed border-gray-700 rounded-xl text-gray-400 hover:text-white hover:border-gray-600 transition-all"
+                className={cn(
+                  "w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed rounded-xl transition-all",
+                  theme === "dark"
+                    ? "border-gray-700 text-gray-400 hover:text-white hover:border-gray-600"
+                    : "border-gray-300 text-gray-500 hover:text-gray-700 hover:border-gray-400"
+                )}
               >
                 <Plus className="w-4 h-4" />
                 Add Cue
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {activeTab === "settings" && (
+        <div className="flex-1 overflow-y-auto">
+          <SettingsComponent />
         </div>
       )}
     </div>

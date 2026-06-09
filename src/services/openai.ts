@@ -11,11 +11,6 @@ interface WhisperResponse {
   }>;
 }
 
-interface TranslationRequest {
-  id: string;
-  text: string;
-}
-
 export class OpenAIService {
   private client: OpenAI | null = null;
 

@@ -35,7 +35,7 @@ export const VideoPlayer = () => {
     subtitleStyle,
   } = useAppStore();
 
-  const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
   const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);

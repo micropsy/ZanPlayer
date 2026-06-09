@@ -119,30 +119,99 @@ async fn download_ffmpeg(_app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-#[cfg(feature = "whisper")]
 async fn download_whisper_model(_app: AppHandle, model_name: String) -> Result<String, String> {
-    let app_dir = get_app_dir();
-    let models_dir = app_dir.join("models");
-    std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+    #[cfg(feature = "whisper")]
+    {
+        let app_dir = get_app_dir();
+        let models_dir = app_dir.join("models");
+        std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
 
-    let model_filename = format!("ggml-{}.bin", model_name);
-    let model_path = models_dir.join(&model_filename);
+        let model_filename = format!("ggml-{}.bin", model_name);
+        let model_path = models_dir.join(&model_filename);
 
-    if model_path.exists() {
-        return Ok(model_path.to_string_lossy().to_string());
+        if model_path.exists() {
+            return Ok(model_path.to_string_lossy().to_string());
+        }
+
+        let url = format!(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}?download=true",
+            model_filename
+        );
+
+        let mut file = File::create(&model_path).map_err(|e| e.to_string())?;
+        let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+
+        Ok(model_path.to_string_lossy().to_string())
     }
+    #[cfg(not(feature = "whisper"))]
+    Err("Whisper feature is not enabled".to_string())
+}
 
-    let url = format!(
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}?download=true",
-        model_filename
-    );
+#[tauri::command]
+async fn delete_whisper_model(model_name: String) -> Result<(), String> {
+    #[cfg(feature = "whisper")]
+    {
+        let app_dir = get_app_dir();
+        let models_dir = app_dir.join("models");
+        let model_filename = format!("ggml-{}.bin", model_name);
+        let model_path = models_dir.join(&model_filename);
 
-    let mut file = File::create(&model_path).map_err(|e| e.to_string())?;
-    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    file.write_all(&bytes).map_err(|e| e.to_string())?;
+        if model_path.exists() {
+            std::fs::remove_file(model_path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
 
-    Ok(model_path.to_string_lossy().to_string())
+#[tauri::command]
+async fn list_downloaded_models() -> Result<Vec<String>, String> {
+    #[cfg(feature = "whisper")]
+    {
+        let app_dir = get_app_dir();
+        let models_dir = app_dir.join("models");
+        let mut models = Vec::new();
+
+        if models_dir.exists() {
+            for entry in std::fs::read_dir(models_dir).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let path = entry.path();
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if ext == "bin" {
+                        if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                            if filename.starts_with("ggml-") && filename.ends_with(".bin") {
+                                let model_name = filename.strip_prefix("ggml-").unwrap_or(filename).strip_suffix(".bin").unwrap_or(filename);
+                                models.push(model_name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(models)
+    }
+    #[cfg(not(feature = "whisper"))]
+    {
+        Ok(Vec::new())
+    }
+}
+
+#[tauri::command]
+async fn check_model_downloaded(model_name: String) -> Result<bool, String> {
+    #[cfg(feature = "whisper")]
+    {
+        let app_dir = get_app_dir();
+        let models_dir = app_dir.join("models");
+        let model_filename = format!("ggml-{}.bin", model_name);
+        let model_path = models_dir.join(&model_filename);
+        Ok(model_path.exists())
+    }
+    #[cfg(not(feature = "whisper"))]
+    {
+        Ok(false)
+    }
 }
 
 #[tauri::command]
@@ -520,6 +589,28 @@ fn format_time(seconds: f64, is_srt: bool) -> String {
 }
 
 #[tauri::command]
+async fn write_file(
+    _app: AppHandle,
+    file_name: String,
+    file_data: Vec<u8>,
+    output_dir: String,
+) -> Result<String, String> {
+    let output_path = PathBuf::from(output_dir).join(format!(
+        "{}_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+        file_name
+    ));
+
+    let mut file = File::create(&output_path).map_err(|e| e.to_string())?;
+    file.write_all(&file_data).map_err(|e| e.to_string())?;
+
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 async fn extract_audio(
     app: AppHandle,
     video_path: String,
@@ -587,12 +678,14 @@ fn main() {
             save_subtitle_dialog,
             read_subtitle_file,
             write_subtitle_file,
+            write_file,
             extract_audio,
             download_ffmpeg,
-            #[cfg(feature = "whisper")]
             download_whisper_model,
-            #[cfg(feature = "whisper")]
             transcribe_audio_local,
+            delete_whisper_model,
+            list_downloaded_models,
+            check_model_downloaded,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
