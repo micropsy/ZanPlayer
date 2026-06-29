@@ -222,14 +222,19 @@ async fn transcribe_audio_local(
     model_name: String,
     language: Option<String>,
 ) -> Result<Vec<SubtitleCue>, String> {
+    println!("Starting transcription for: {}", audio_path);
     let app_dir = get_app_dir();
     let models_dir = app_dir.join("models");
     let model_path = models_dir.join(format!("ggml-{}.bin", model_name));
+    println!("Model path: {:?}", model_path);
 
     if !model_path.exists() {
-        download_whisper_model(app, model_name).await?;
+        println!("Model not found, downloading...");
+        download_whisper_model(app.clone(), model_name.clone()).await?;
+        println!("Model downloaded!");
     }
 
+    println!("Loading model...");
     let params = WhisperContextParameters::default();
     let ctx = WhisperContext::new_with_params(&model_path.to_string_lossy(), params)
         .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
@@ -593,9 +598,12 @@ async fn write_file(
     _app: AppHandle,
     file_name: String,
     file_data: Vec<u8>,
-    output_dir: String,
 ) -> Result<String, String> {
-    let output_path = PathBuf::from(output_dir).join(format!(
+    // Create temporary directory for file output
+    let temp_dir = std::env::temp_dir().join("subplayer");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    
+    let output_path = temp_dir.join(format!(
         "{}_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -614,30 +622,40 @@ async fn write_file(
 async fn extract_audio(
     app: AppHandle,
     video_path: String,
-    output_dir: String,
 ) -> Result<String, String> {
+    println!("Extracting audio from: {}", video_path);
     let app_dir = get_app_dir();
     let ffmpeg_path = app_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    println!("FFmpeg path: {:?}", ffmpeg_path);
 
     if !ffmpeg_path.exists() {
+        println!("FFmpeg not found, downloading...");
         download_ffmpeg(app.clone()).await?;
+        println!("FFmpeg downloaded!");
     }
 
-    let output_path = PathBuf::from(output_dir).join(format!(
+    // Create temporary directory for audio output
+    let temp_dir = std::env::temp_dir().join("subplayer");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
+    
+    let output_path = temp_dir.join(format!(
         "extracted_{}.wav",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
     ));
+    println!("Output path: {:?}", output_path);
 
     let shell = app.shell();
     let temp_ffmpeg = std::env::temp_dir().join(ffmpeg_path.file_name().unwrap());
-    std::fs::copy(&ffmpeg_path, &temp_ffmpeg).map_err(|e| e.to_string())?;
+    std::fs::copy(&ffmpeg_path, &temp_ffmpeg).map_err(|e| format!("Failed to copy FFmpeg: {}", e))?;
+    println!("FFmpeg copied to temp dir: {:?}", temp_ffmpeg);
 
     let sidecar = shell.sidecar(temp_ffmpeg.to_str().unwrap())
-        .map_err(|e| format!("Failed to get FFmpeg: {}", e))?;
+        .map_err(|e| format!("Failed to get FFmpeg sidecar: {}", e))?;
 
+    println!("Running FFmpeg command...");
     let output = sidecar
         .args([
             "-i",
@@ -654,7 +672,7 @@ async fn extract_audio(
         ])
         .output()
         .await
-        .map_err(|e| format!("FFmpeg failed: {}", e))?;
+        .map_err(|e| format!("FFmpeg failed to run: {}", e))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -672,6 +690,7 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             open_video_dialog,
             open_subtitle_dialog,

@@ -14,7 +14,7 @@ import {
   FileVideo,
   Menu,
 } from "lucide-react";
-import { OpenAIService } from "../services/openai";
+
 import { TauriService } from "../services/tauri";
 import { SettingsComponent } from "./Settings";
 import { cn } from "../utils/cn";
@@ -35,8 +35,6 @@ export const Sidebar = () => {
     setCurrentVideo,
     currentVideoPath,
     setCurrentVideoPath,
-    apiKey,
-    defaultTargetLanguage,
     updateCue,
     updateCueTiming,
     shiftAllCues,
@@ -45,7 +43,6 @@ export const Sidebar = () => {
     progressStep,
     progressPercent,
     setProgress,
-    useLocalWhisper,
     whisperModel,
     setSeekTo,
     theme,
@@ -53,27 +50,113 @@ export const Sidebar = () => {
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<Tab>("main");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [targetLanguage, setTargetLanguage] = useState(defaultTargetLanguage);
   const [shiftOffset, setShiftOffset] = useState<string>("0");
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState<string>("auto");
 
+  // Whisper supported languages
   const languages = [
-    "Burmese",
-    "English",
-    "Spanish",
-    "French",
-    "German",
-    "Chinese (Simplified)",
-    "Chinese (Traditional)",
-    "Japanese",
-    "Korean",
-    "Portuguese",
-    "Russian",
-    "Arabic",
-    "Hindi",
-    "Thai",
-    "Vietnamese",
+    { code: "auto", name: "Auto Detect" },
+    { code: "en", name: "English" },
+    { code: "zh", name: "Chinese" },
+    { code: "de", name: "German" },
+    { code: "es", name: "Spanish" },
+    { code: "ru", name: "Russian" },
+    { code: "ko", name: "Korean" },
+    { code: "fr", name: "French" },
+    { code: "ja", name: "Japanese" },
+    { code: "pt", name: "Portuguese" },
+    { code: "tr", name: "Turkish" },
+    { code: "pl", name: "Polish" },
+    { code: "ca", name: "Catalan" },
+    { code: "nl", name: "Dutch" },
+    { code: "ar", name: "Arabic" },
+    { code: "sv", name: "Swedish" },
+    { code: "it", name: "Italian" },
+    { code: "id", name: "Indonesian" },
+    { code: "hi", name: "Hindi" },
+    { code: "fi", name: "Finnish" },
+    { code: "vi", name: "Vietnamese" },
+    { code: "iw", name: "Hebrew" },
+    { code: "uk", name: "Ukrainian" },
+    { code: "el", name: "Greek" },
+    { code: "ms", name: "Malay" },
+    { code: "cs", name: "Czech" },
+    { code: "ro", name: "Romanian" },
+    { code: "da", name: "Danish" },
+    { code: "hu", name: "Hungarian" },
+    { code: "ta", name: "Tamil" },
+    { code: "no", name: "Norwegian" },
+    { code: "th", name: "Thai" },
+    { code: "ur", name: "Urdu" },
+    { code: "hr", name: "Croatian" },
+    { code: "bg", name: "Bulgarian" },
+    { code: "lt", name: "Lithuanian" },
+    { code: "la", name: "Latin" },
+    { code: "mi", name: "Maori" },
+    { code: "ml", name: "Malayalam" },
+    { code: "cy", name: "Welsh" },
+    { code: "sk", name: "Slovak" },
+    { code: "te", name: "Telugu" },
+    { code: "fa", name: "Persian" },
+    { code: "lv", name: "Latvian" },
+    { code: "bn", name: "Bengali" },
+    { code: "sr", name: "Serbian" },
+    { code: "az", name: "Azerbaijani" },
+    { code: "sl", name: "Slovenian" },
+    { code: "kn", name: "Kannada" },
+    { code: "et", name: "Estonian" },
+    { code: "mk", name: "Macedonian" },
+    { code: "br", name: "Breton" },
+    { code: "eu", name: "Basque" },
+    { code: "is", name: "Icelandic" },
+    { code: "hy", name: "Armenian" },
+    { code: "ne", name: "Nepali" },
+    { code: "mn", name: "Mongolian" },
+    { code: "bs", name: "Bosnian" },
+    { code: "kk", name: "Kazakh" },
+    { code: "sq", name: "Albanian" },
+    { code: "sw", name: "Swahili" },
+    { code: "gl", name: "Galician" },
+    { code: "mr", name: "Marathi" },
+    { code: "pa", name: "Punjabi" },
+    { code: "si", name: "Sinhala" },
+    { code: "km", name: "Khmer" },
+    { code: "sn", name: "Shona" },
+    { code: "yo", name: "Yoruba" },
+    { code: "so", name: "Somali" },
+    { code: "af", name: "Afrikaans" },
+    { code: "oc", name: "Occitan" },
+    { code: "ka", name: "Georgian" },
+    { code: "be", name: "Belarusian" },
+    { code: "tg", name: "Tajik" },
+    { code: "sd", name: "Sindhi" },
+    { code: "gu", name: "Gujarati" },
+    { code: "am", name: "Amharic" },
+    { code: "yi", name: "Yiddish" },
+    { code: "lo", name: "Lao" },
+    { code: "uz", name: "Uzbek" },
+    { code: "fo", name: "Faroese" },
+    { code: "ht", name: "Haitian Creole" },
+    { code: "ps", name: "Pashto" },
+    { code: "tk", name: "Turkmen" },
+    { code: "nn", name: "Nynorsk" },
+    { code: "mt", name: "Maltese" },
+    { code: "sa", name: "Sanskrit" },
+    { code: "lb", name: "Luxembish" },
+    { code: "my", name: "Burmese" },
+    { code: "bo", name: "Tibetan" },
+    { code: "tl", name: "Tagalog" },
+    { code: "mg", name: "Malagasy" },
+    { code: "as", name: "Assamese" },
+    { code: "tt", name: "Tatar" },
+    { code: "haw", name: "Hawaiian" },
+    { code: "ln", name: "Lingala" },
+    { code: "ha", name: "Hausa" },
+    { code: "ba", name: "Bashkir" },
+    { code: "jw", name: "Javanese" },
+    { code: "su", name: "Sundanese" },
   ];
 
   const onDragOver = useCallback((e: React.DragEvent) => {
@@ -229,8 +312,15 @@ export const Sidebar = () => {
       const videoFile = await TauriService.openVideoDialog();
       if (videoFile) {
         setCurrentVideoPath(videoFile.path);
-        const url = `file://${encodeURIComponent(videoFile.path)}`;
-        setCurrentVideoUrl(url);
+        // Only set URL if running in Tauri environment
+        if (isTauriApp) {
+          // In Tauri, we'll use the path directly through Tauri's filesystem API
+          // But for now, let's just set the URL to be handled specially
+          // In a real Tauri app, you'd use tauri-plugin-fs to get a proper asset URL
+          setCurrentVideoUrl(null); // We'll update the VideoPlayer component to handle this case
+        } else {
+          setCurrentVideoUrl(null);
+        }
       }
     } catch (error) {
       setErrorMessage(`Error selecting video: ${(error as Error).message}`);
@@ -263,11 +353,6 @@ export const Sidebar = () => {
   };
 
   const handleGenerateSubtitles = async () => {
-    if (!useLocalWhisper && !apiKey) {
-      alert("Please enter an OpenAI API key in Settings");
-      return;
-    }
-
     if (!currentVideo && !currentVideoPath) {
       alert("Please select a video first");
       return;
@@ -275,61 +360,51 @@ export const Sidebar = () => {
 
     setProgress("extracting", 0);
     setErrorMessage(null);
-    let audioFile: File | null = null;
     let extractedAudioPath: string | null = null;
     let tempVideoPath: string | null = null;
 
     try {
       if (currentVideoPath) {
+        console.log("Step 1: Extracting audio from native file...", currentVideoPath);
         const audioPath = await TauriService.extractAudio(currentVideoPath);
+        console.log("Step 1 complete: Audio path", audioPath);
         extractedAudioPath = audioPath;
-        setProgress("extracting", 50);
-        if (!useLocalWhisper) {
-          const audioBlob = await TauriService.readFileAsBlob(audioPath);
-          audioFile = new File([audioBlob], "extracted_audio.wav", { type: "audio/wav" });
-        }
         setProgress("extracting", 100);
       } else if (currentVideo) {
-        if (useLocalWhisper) {
-          // For local whisper with uploaded file, we need to write it to disk first
-          setProgress("saving", 25);
-          const fileArrayBuffer = await currentVideo.arrayBuffer();
-          const fileUint8Array = new Uint8Array(fileArrayBuffer);
-          tempVideoPath = await TauriService.writeFile(currentVideo.name, fileUint8Array);
-          setProgress("extracting", 50);
-          
-          const audioPath = await TauriService.extractAudio(tempVideoPath);
-          extractedAudioPath = audioPath;
-          setProgress("extracting", 100);
-        } else {
-          audioFile = currentVideo;
-        }
+        // For local whisper with uploaded file, we need to write it to disk first
+        setProgress("saving", 25);
+        console.log("Step 1: Writing uploaded file to disk...");
+        const fileArrayBuffer = await currentVideo.arrayBuffer();
+        const fileUint8Array = new Uint8Array(fileArrayBuffer);
+        tempVideoPath = await TauriService.writeFile(currentVideo.name, fileUint8Array);
+        console.log("Step 1 complete: Temp video path", tempVideoPath);
+        setProgress("extracting", 50);
+        
+        console.log("Step 2: Extracting audio...");
+        const audioPath = await TauriService.extractAudio(tempVideoPath);
+        console.log("Step 2 complete: Audio path", audioPath);
+        extractedAudioPath = audioPath;
+        setProgress("extracting", 100);
+      }
+
+      if (!extractedAudioPath) {
+        throw new Error("Failed to extract audio");
       }
 
       setProgress("transcribing", 0);
-      let cues;
-      if (useLocalWhisper) {
-        if (!extractedAudioPath) {
-          throw new Error("Local transcription requires extracting audio first");
-        }
-        cues = await TauriService.transcribeAudioLocal(
-          extractedAudioPath,
-          whisperModel,
-          "en"
-        );
-      } else {
-        if (!audioFile) {
-          throw new Error("No audio file available for OpenAI API");
-        }
-        const service = new OpenAIService(apiKey);
-        cues = await service.transcribeAudio(audioFile);
-      }
+      const whisperLanguage = selectedLanguage === "auto" ? undefined : selectedLanguage;
+      const cues = await TauriService.transcribeAudioLocal(
+        extractedAudioPath,
+        whisperModel,
+        whisperLanguage
+      );
       setProgress("transcribing", 100);
 
+      const languageName = languages.find(l => l.code === selectedLanguage)?.name || "Unknown";
       const newTrack: SubtitleTrack = {
         id: `track-${Date.now()}`,
-        name: "Auto-Generated (English)",
-        language: "English",
+        name: `Auto-Generated (${languageName})`,
+        language: languageName,
         cues,
         isGenerated: true,
       };
@@ -339,46 +414,8 @@ export const Sidebar = () => {
       setTimeout(() => setProgress("idle", 0), 1500);
     } catch (error) {
       console.error("Subtitle generation error:", error);
-      setErrorMessage(`Error: ${(error as Error).message}`);
-      setProgress("idle", 0);
-    }
-  };
-
-  const handleTranslate = async () => {
-    if (!apiKey) {
-      alert("Please enter an OpenAI API key in Settings");
-      return;
-    }
-
-    const activeTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
-    if (!activeTrack) {
-      alert("Please select a subtitle track first");
-      return;
-    }
-
-    setProgress("translating", 0);
-    setErrorMessage(null);
-    try {
-      const service = new OpenAIService(apiKey);
-      setProgress("translating", 50);
-      const translatedCues = await service.batchTranslate(activeTrack.cues, targetLanguage);
-      setProgress("translating", 100);
-
-      const newTrack: SubtitleTrack = {
-        id: `translated-${Date.now()}`,
-        name: `Translated (${targetLanguage})`,
-        language: targetLanguage,
-        cues: translatedCues,
-        isTranslated: true,
-      };
-
-      const updatedTracks = [...subtitleTracks, newTrack];
-      setSubtitleTracks(updatedTracks);
-      setActiveTranslatedTrackId(newTrack.id);
-      setTimeout(() => setProgress("idle", 0), 1500);
-    } catch (error) {
-      console.error("Translation error:", error);
-      setErrorMessage(`Translation error: ${(error as Error).message}`);
+      const errMsg = (error as Error).message || String(error);
+      setErrorMessage(`Error: ${errMsg}`);
       setProgress("idle", 0);
     }
   };
@@ -444,8 +481,6 @@ export const Sidebar = () => {
         return "Extracting audio...";
       case "transcribing":
         return "Transcribing audio...";
-      case "translating":
-        return "Translating subtitles...";
       default:
         return "";
     }
@@ -641,25 +676,17 @@ export const Sidebar = () => {
 
             {/* Controls */}
             <div className="space-y-3">
-              <button
-                onClick={handleGenerateSubtitles}
-                disabled={isProcessing || (!currentVideo && !currentVideoPath)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-gray-600 disabled:to-gray-700 text-white rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] shadow-lg shadow-green-900/20"
-              >
-                <Languages className="w-5 h-5" />
-                {getStepText() || "Auto-Transcribe"}
-              </button>
-
-              <div className="space-y-2">
+              {/* Language Selector */}
+              <div className="space-y-1">
                 <label className={cn(
                   "block text-xs font-semibold uppercase tracking-wider",
                   theme === "dark" ? "text-gray-400" : "text-gray-500"
                 )}>
-                  Target Language
+                  Video Language
                 </label>
                 <select
-                  value={targetLanguage}
-                  onChange={(e) => setTargetLanguage(e.target.value)}
+                  value={selectedLanguage}
+                  onChange={(e) => setSelectedLanguage(e.target.value)}
                   className={cn(
                     "w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2",
                     theme === "dark"
@@ -668,18 +695,18 @@ export const Sidebar = () => {
                   )}
                 >
                   {languages.map((lang) => (
-                    <option key={lang} value={lang}>{lang}</option>
+                    <option key={lang.code} value={lang.code}>{lang.name}</option>
                   ))}
                 </select>
               </div>
 
               <button
-                onClick={handleTranslate}
-                disabled={isProcessing || !activeSubtitleTrackId}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-purple-600 to-violet-600 hover:from-purple-500 hover:to-violet-500 disabled:from-gray-600 disabled:to-gray-700 text-white rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] shadow-lg shadow-purple-900/20"
+                onClick={handleGenerateSubtitles}
+                disabled={isProcessing || (!currentVideo && !currentVideoPath)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-gray-600 disabled:to-gray-700 text-white rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] shadow-lg shadow-green-900/20"
               >
                 <Languages className="w-5 h-5" />
-                {progressStep === "translating" ? "Translating..." : "Auto-Translate"}
+                {getStepText() || "Auto-Transcribe"}
               </button>
 
               <button
@@ -812,7 +839,9 @@ export const Sidebar = () => {
                       <p className={cn(
                         "text-xs mt-0.5",
                         theme === "dark" ? "text-gray-500" : "text-gray-400"
-                      )}>{track.cues.length} cues</p>
+                      )}>
+                        {track.language} • {track.cues.length} cues
+                      </p>
                     </div>
                     <div className="flex items-center gap-1">
                       {track.isGenerated && (

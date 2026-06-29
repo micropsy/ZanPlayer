@@ -14,6 +14,7 @@ import {
   SkipBack,
 } from "lucide-react";
 import { cn } from "../utils/cn";
+import { TauriService, isTauri } from "../services/tauri";
 
 export const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -21,8 +22,10 @@ export const VideoPlayer = () => {
   const [volume, setVolume] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [videoSource, setVideoSource] = useState<string | null>(null);
   const {
     currentVideoUrl,
+    currentVideoPath,
     setCurrentTime,
     isPlaying,
     setIsPlaying,
@@ -202,17 +205,56 @@ export const VideoPlayer = () => {
     return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
 
+  // Handle video source management
+  useEffect(() => {
+    if (currentVideoUrl) {
+      setVideoSource(currentVideoUrl);
+    }
+  }, [currentVideoUrl]);
+
+  useEffect(() => {
+    if (currentVideoPath && isTauri()) {
+      // If we have a video path in Tauri environment, convert it to a blob URL
+      let isMounted = true;
+      
+      const loadVideo = async () => {
+        try {
+          const blobUrl = await TauriService.getVideoBlobUrl(currentVideoPath);
+          if (isMounted) {
+            setVideoSource(blobUrl);
+          }
+        } catch (error) {
+          console.error("Failed to load video from path:", error);
+          if (isMounted) {
+            setVideoSource(null);
+          }
+        }
+      };
+
+      loadVideo();
+      
+      return () => {
+        isMounted = false;
+        if (videoSource?.startsWith("blob:")) {
+          URL.revokeObjectURL(videoSource);
+        }
+      };
+    } else if (!currentVideoPath && !currentVideoUrl) {
+      setVideoSource(null);
+    }
+  }, [currentVideoPath, currentVideoUrl]);
+
   return (
     <div
       className="relative w-full h-full bg-black group"
       onMouseMove={handleMouseMove}
       onMouseLeave={() => isPlaying && setShowControls(false)}
     >
-      {currentVideoUrl ? (
+      {videoSource ? (
         <>
           <video
             ref={videoRef}
-            src={currentVideoUrl}
+            src={videoSource}
             className="w-full h-full object-contain"
             onTimeUpdate={handleTimeUpdate}
             onPlay={() => setIsPlaying(true)}

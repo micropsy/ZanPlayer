@@ -32,13 +32,12 @@
     "@tauri-apps/plugin-fs": "^2.5.1",
     "@tauri-apps/plugin-http": "^2.5.9",
     "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.17.0",
-    "openai": "^6.42.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tailwind-merge": "^3.6.0",
-    "zustand": "^5.0.14",
-    "zustand-persist": "^0.4.0"
+    "zustand": "^5.0.14"
   }
 }

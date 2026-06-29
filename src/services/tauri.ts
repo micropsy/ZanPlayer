@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { homeDir } from "@tauri-apps/api/path";
 import { readFile } from "@tauri-apps/plugin-fs";
 import type { SubtitleCue } from "../types/subtitle";
 
@@ -10,7 +9,9 @@ interface VideoFile {
 
 // Check if we're running in a Tauri environment
 export const isTauri = () => {
-  return true;
+  return typeof window !== "undefined" && 
+    (typeof (window as any).__TAURI_INTERNALS__ !== "undefined" || 
+     typeof (window as any).__TAURI__ !== "undefined");
 };
 
 export class TauriService {
@@ -80,11 +81,9 @@ export class TauriService {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
-    const home = await homeDir();
     return await invoke<string>("write_file", {
       fileName,
       fileData: Array.from(fileData),
-      outputDir: home,
     });
   }
 
@@ -92,19 +91,25 @@ export class TauriService {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
-    const home = await homeDir();
     return await invoke<string>("extract_audio", {
       videoPath,
-      outputDir: home,
     });
   }
 
-  static async readFileAsBlob(filePath: string): Promise<Blob> {
+  static async readFileAsBlob(filePath: string, mimeType: string = "audio/wav"): Promise<Blob> {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
     const binaryData = await readFile(filePath);
-    return new Blob([binaryData], { type: "audio/wav" });
+    return new Blob([binaryData], { type: mimeType });
+  }
+
+  static async getVideoBlobUrl(filePath: string): Promise<string> {
+    if (!isTauri()) {
+      throw new Error("This feature requires the Tauri app");
+    }
+    const videoBlob = await this.readFileAsBlob(filePath, "video/mp4");
+    return URL.createObjectURL(videoBlob);
   }
 
   static async transcribeAudioLocal(

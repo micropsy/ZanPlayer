@@ -4,7 +4,7 @@ import type { SubtitleTrack, SubtitleCue } from "../types/subtitle";
 import { TauriService } from "./tauri";
 
 export type SubtitleDisplayMode = "original" | "translated" | "dual";
-export type ProgressStep = "idle" | "saving" | "extracting" | "transcribing" | "translating";
+export type ProgressStep = "idle" | "saving" | "extracting" | "transcribing";
 
 export interface SubtitleStyle {
     fontName: string;
@@ -52,10 +52,6 @@ interface AppState {
     setSeekTo: (time: number | null) => void;
 
     // Settings
-    apiKey: string;
-    setApiKey: (key: string) => void;
-    defaultTargetLanguage: string;
-    setDefaultTargetLanguage: (lang: string) => void;
     theme: "dark" | "light";
     setTheme: (theme: "dark" | "light") => void;
     useLocalWhisper: boolean;
@@ -83,58 +79,58 @@ interface AppState {
 
 export const useAppStore = create<AppState>()(
     persist(
-        (set, get) => ({
+        (set: (partial: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => void, get: () => AppState) => ({
             currentVideo: null,
-            setCurrentVideo: (video) => set({ currentVideo: video }),
+            setCurrentVideo: (video: File | null) => set({ currentVideo: video }),
             currentVideoUrl: null,
-            setCurrentVideoUrl: (url) => set({ currentVideoUrl: url }),
+            setCurrentVideoUrl: (url: string | null) => set({ currentVideoUrl: url }),
             currentVideoPath: null,
-            setCurrentVideoPath: (path) => set({ currentVideoPath: path }),
+            setCurrentVideoPath: (path: string | null) => set({ currentVideoPath: path }),
             subtitleTracks: [],
-            setSubtitleTracks: (tracks) => set({ subtitleTracks: tracks }),
+            setSubtitleTracks: (tracks: SubtitleTrack[]) => set({ subtitleTracks: tracks }),
             activeSubtitleTrackId: null,
-            setActiveSubtitleTrackId: (id) => set({ activeSubtitleTrackId: id }),
+            setActiveSubtitleTrackId: (id: string | null) => set({ activeSubtitleTrackId: id }),
             activeTranslatedTrackId: null,
-            setActiveTranslatedTrackId: (id) => set({ activeTranslatedTrackId: id }),
+            setActiveTranslatedTrackId: (id: string | null) => set({ activeTranslatedTrackId: id }),
             subtitleDisplayMode: "dual",
-            setSubtitleDisplayMode: (mode) => set({ subtitleDisplayMode: mode }),
+            setSubtitleDisplayMode: (mode: SubtitleDisplayMode) => set({ subtitleDisplayMode: mode }),
             currentTime: 0,
-            setCurrentTime: (time) => set({ currentTime: time }),
+            setCurrentTime: (time: number) => set({ currentTime: time }),
             isPlaying: false,
-            setIsPlaying: (playing) => set({ isPlaying: playing }),
-            updateCue: (trackId, cueId, newText) =>
-                set((state) => ({
-                    subtitleTracks: state.subtitleTracks.map((track) =>
+            setIsPlaying: (playing: boolean) => set({ isPlaying: playing }),
+            updateCue: (trackId: string, cueId: string, newText: string) =>
+                set((state: AppState) => ({
+                    subtitleTracks: state.subtitleTracks.map((track: SubtitleTrack) =>
                         track.id === trackId
                             ? {
                                   ...track,
-                                  cues: track.cues.map((cue) =>
+                                  cues: track.cues.map((cue: SubtitleCue) =>
                                       cue.id === cueId ? { ...cue, text: newText } : cue
                                   ),
                               }
                             : track
                     ),
                 })),
-            updateCueTiming: (trackId, cueId, startTime, endTime) =>
-                set((state) => ({
-                    subtitleTracks: state.subtitleTracks.map((track) =>
+            updateCueTiming: (trackId: string, cueId: string, startTime: number, endTime: number) =>
+                set((state: AppState) => ({
+                    subtitleTracks: state.subtitleTracks.map((track: SubtitleTrack) =>
                         track.id === trackId
                             ? {
                                   ...track,
-                                  cues: track.cues.map((cue) =>
+                                  cues: track.cues.map((cue: SubtitleCue) =>
                                       cue.id === cueId ? { ...cue, startTime, endTime } : cue
                                   ),
                               }
                             : track
                     ),
                 })),
-            shiftAllCues: (trackId, offset) =>
-                set((state) => ({
-                    subtitleTracks: state.subtitleTracks.map((track) =>
+            shiftAllCues: (trackId: string, offset: number) =>
+                set((state: AppState) => ({
+                    subtitleTracks: state.subtitleTracks.map((track: SubtitleTrack) =>
                         track.id === trackId
                             ? {
                                   ...track,
-                                  cues: track.cues.map((cue) => ({
+                                  cues: track.cues.map((cue: SubtitleCue) => ({
                                       ...cue,
                                       startTime: Math.max(0, cue.startTime + offset),
                                       endTime: Math.max(0, cue.endTime + offset),
@@ -143,17 +139,17 @@ export const useAppStore = create<AppState>()(
                             : track
                     ),
                 })),
-            deleteCue: (trackId, cueId) =>
-                set((state) => ({
-                    subtitleTracks: state.subtitleTracks.map((track) =>
+            deleteCue: (trackId: string, cueId: string) =>
+                set((state: AppState) => ({
+                    subtitleTracks: state.subtitleTracks.map((track: SubtitleTrack) =>
                         track.id === trackId
-                            ? { ...track, cues: track.cues.filter((cue) => cue.id !== cueId) }
+                            ? { ...track, cues: track.cues.filter((cue: SubtitleCue) => cue.id !== cueId) }
                             : track
                     ),
                 })),
-            addCue: (trackId, cue) =>
-                set((state) => ({
-                    subtitleTracks: state.subtitleTracks.map((track) =>
+            addCue: (trackId: string, cue: SubtitleCue) =>
+                set((state: AppState) => ({
+                    subtitleTracks: state.subtitleTracks.map((track: SubtitleTrack) =>
                         track.id === trackId
                             ? { ...track, cues: [...track.cues, cue] }
                             : track
@@ -163,31 +159,26 @@ export const useAppStore = create<AppState>()(
             // Progress
             progressStep: "idle",
             progressPercent: 0,
-            setProgress: (step, percent) =>
+            setProgress: (step: ProgressStep, percent: number) =>
                 set({ progressStep: step, progressPercent: percent }),
 
             // Seek
             seekTo: null,
-            setSeekTo: (time) => set({ seekTo: time }),
+            setSeekTo: (time: number | null) => set({ seekTo: time }),
 
             // Settings
-            apiKey: "",
-            setApiKey: (key) => set({ apiKey: key }),
-            defaultTargetLanguage: "Burmese",
-            setDefaultTargetLanguage: (lang) =>
-                set({ defaultTargetLanguage: lang }),
             theme: "dark",
-            setTheme: (theme) => set({ theme }),
-            useLocalWhisper: false,
-            setUseLocalWhisper: (use) => set({ useLocalWhisper: use }),
+            setTheme: (theme: "dark" | "light") => set({ theme }),
+            useLocalWhisper: true,
+            setUseLocalWhisper: (use: boolean) => set({ useLocalWhisper: use }),
             whisperModel: "tiny",
-            setWhisperModel: (model) => set({ whisperModel: model }),
+            setWhisperModel: (model: string) => set({ whisperModel: model }),
 
             // Model management
             downloadedModels: [],
-            setDownloadedModels: (models) => set({ downloadedModels: models }),
+            setDownloadedModels: (models: string[]) => set({ downloadedModels: models }),
             downloadingModels: new Set(),
-            setDownloadingModels: (models) => set({ downloadingModels: models }),
+            setDownloadingModels: (models: Set<string>) => set({ downloadingModels: models }),
             loadDownloadedModels: async () => {
                 try {
                     const models = await TauriService.listDownloadedModels();
@@ -196,7 +187,7 @@ export const useAppStore = create<AppState>()(
                     console.error("Failed to load downloaded models:", err);
                 }
             },
-            downloadModel: async (modelName) => {
+            downloadModel: async (modelName: string) => {
                 const state = get();
                 if (state.downloadingModels.has(modelName)) return;
                 
@@ -215,7 +206,7 @@ export const useAppStore = create<AppState>()(
                     set({ downloadingModels: updatedDownloading });
                 }
             },
-            deleteModel: async (modelName) => {
+            deleteModel: async (modelName: string) => {
                 try {
                     await TauriService.deleteWhisperModel(modelName);
                     await get().loadDownloadedModels();
@@ -235,20 +226,18 @@ export const useAppStore = create<AppState>()(
                 italic: false,
                 alignment: "bottom",
             },
-            setSubtitleStyle: (style) =>
-                set((state) => ({
+            setSubtitleStyle: (style: Partial<SubtitleStyle>) =>
+                set((state: AppState) => ({
                     subtitleStyle: { ...state.subtitleStyle, ...style },
                 })),
             
             // Sidebar
             sidebarVisible: true,
-            setSidebarVisible: (visible) => set({ sidebarVisible: visible }),
+            setSidebarVisible: (visible: boolean) => set({ sidebarVisible: visible }),
         }),
         {
             name: "subplayer-storage",
-            partialize: (state) => ({
-                apiKey: state.apiKey,
-                defaultTargetLanguage: state.defaultTargetLanguage,
+            partialize: (state: AppState) => ({
                 theme: state.theme,
                 useLocalWhisper: state.useLocalWhisper,
                 whisperModel: state.whisperModel,
