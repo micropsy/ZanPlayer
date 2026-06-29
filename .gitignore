@@ -27,3 +27,6 @@ Thumbs.db
 # Tauri
 src-tauri/target/
 src-tauri/Cargo.lock
+
+# Private key (keep secret!)
+private-key.pem
