@@ -1,25 +1,28 @@
 # Sub Player
 
-A modern, beautiful desktop video player with AI-powered subtitle generation and translation capabilities, built with Tauri, React, TypeScript, and Tailwind CSS.
+A modern, beautiful desktop video player with AI-powered subtitle generation and translation capabilities, built with Tauri, React, TypeScript, and Tailwind CSS. **100% offline-first** - no external API keys required!
 
 ## Features
 
 ### Core Features
 - 🎬 Modern, clean video player interface
-- 📝 Subtitle overlay with custom styling
+- 📝 Subtitle overlay with custom styling (font, size, colors)
 - 🎯 Multiple subtitle display modes:
   - Original only
   - Translated only
   - Dual mode (both languages together)
 - ⌨️ Keyboard shortcuts for all controls
-- 📱 Responsive design
+- 📱 Responsive design with toggleable sidebar
 - 🔄 Fullscreen support
+- 🖱️ Drag-and-drop support for video and subtitle files
+- 🔄 Auto-updater via GitHub releases
 
 ### AI Features
-- 🤖 Auto-subtitle generation using OpenAI Whisper API
-- 🌐 Auto-translation to 15+ languages using OpenAI GPT API
+- 🤖 Local subtitle generation using Whisper (offline, no API key!)
+- 🌐 Local translation to English using Whisper
 - 📄 Load existing subtitle files (SRT, VTT)
 - 💾 Export subtitles in SRT or VTT formats
+- 📦 Model manager to download/delete Whisper models locally
 
 ### Subtitle Editor
 - ✏️ Edit subtitle text in real-time
@@ -29,9 +32,10 @@ A modern, beautiful desktop video player with AI-powered subtitle generation and
 - 📊 Shift all cues by a time offset
 
 ### Settings
-- 🔑 Save API keys securely
+- 🎨 Theme preferences (light/dark mode)
 - 🌍 Default target language preference
-- 🎨 Theme preferences (coming soon)
+- 🔤 Custom subtitle styling (font family, size, colors) with real-time preview
+- 🤖 Whisper model management (download/delete models)
 
 ## Keyboard Shortcuts
 
@@ -48,7 +52,6 @@ A modern, beautiful desktop video player with AI-powered subtitle generation and
 ### Prerequisites
 1. **Node.js** (v18 or higher)
 2. **Rust** (for Tauri)
-3. **OpenAI API Key** (for AI features)
 
 ### Steps
 
@@ -68,16 +71,11 @@ npm install
 npm run tauri dev
 ```
 
-## FFmpeg Setup
+## FFmpeg & Whisper Setup
 
-For local video processing (audio extraction), you'll need FFmpeg:
-
-1. Download FFmpeg for your platform from [https://ffmpeg.org/download.html](https://ffmpeg.org/download.html)
-2. Place the binary in `src-tauri/binaries/` with the appropriate name:
-   - macOS (Apple Silicon): `ffmpeg-aarch64-apple-darwin`
-   - macOS (Intel): `ffmpeg-x86_64-apple-darwin`
-   - Windows: `ffmpeg-x86_64-pc-windows-msvc.exe`
-   - Linux: `ffmpeg-x86_64-unknown-linux-gnu`
+**No manual setup needed!** The app automatically:
+- Downloads FFmpeg on first launch
+- Downloads Whisper models when selected in settings
 
 ## Project Structure
 
@@ -89,7 +87,6 @@ Sub Player/
 │   │   ├── VideoPlayer.tsx # Video player component
 │   │   └── Settings.tsx   # Settings panel
 │   ├── services/          # Business logic
-│   │   ├── openai.ts      # OpenAI API client
 │   │   ├── tauri.ts       # Tauri commands wrapper
 │   │   └── store.ts       # Zustand state management
 │   ├── types/             # TypeScript type definitions
@@ -109,33 +106,28 @@ Sub Player/
 
 - **Desktop**: Tauri 2
 - **Frontend**: React 19 + TypeScript
-- **Styling**: Tailwind CSS
+- **Styling**: Tailwind CSS v4
 - **State Management**: Zustand
-- **AI**: OpenAI API (Whisper, GPT)
+- **AI**: whisper-rs (local Whisper models, no external APIs)
 - **Build Tool**: Vite
+- **Icon Library**: Lucide React
 
 ## Usage
 
 1. Launch the app
-2. Open Settings and enter your OpenAI API key
-3. Select a video file
-4. Generate subtitles with the "Auto-Transcribe" button
-5. Translate subtitles if needed
-6. Use the subtitle mode switcher to choose your preferred view
+2. Drag-and-drop a video file or use the open button
+3. Go to Settings and download a Whisper model (if not already downloaded)
+4. Select your preferred model and target language
+5. Generate subtitles with the "Auto-Transcribe" button
+6. Use the subtitle mode switcher in the player controls to choose your preferred view
 7. Export your subtitles if desired
 
 ## Future Plans
 
-- [ ] Local Whisper support (no API key needed)
-- [ ] Auto-download FFmpeg
 - [ ] More subtitle formats (ASS, SSA, etc.)
-- [ ] Subtitle styling customization
 - [ ] Project save/load
-- [ ] CI/CD for automated builds
 - [ ] Tests for frontend and backend
-- [ ] Drag-and-drop support
 - [ ] Connect subtitle editor with video player (seek to cue on click)
-- [ ] Better progress indicators for AI operations
 
 ## Contributing
 
@@ -148,6 +140,6 @@ MIT
 ## Acknowledgments
 
 - [Tauri](https://tauri.app/) - For the amazing desktop framework
-- [OpenAI](https://openai.com/) - For the AI APIs
+- [whisper-rs](https://github.com/tazz4843/whisper-rs) - For local Whisper inference
 - [FFmpeg](https://ffmpeg.org/) - For video processing
 - Everyone who contributes to open source!
