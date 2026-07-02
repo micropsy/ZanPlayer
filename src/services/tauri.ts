@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
 import { readFile } from "@tauri-apps/plugin-fs";
 import type { SubtitleCue } from "../types/subtitle";
 
@@ -9,9 +11,7 @@ interface VideoFile {
 
 // Check if we're running in a Tauri environment
 export const isTauri = () => {
-  return typeof window !== "undefined" && 
-    (typeof (window as any).__TAURI_INTERNALS__ !== "undefined" || 
-     typeof (window as any).__TAURI__ !== "undefined");
+  return true;
 };
 
 export class TauriService {
@@ -81,9 +81,11 @@ export class TauriService {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
+    const home = await homeDir();
     return await invoke<string>("write_file", {
       fileName,
       fileData: Array.from(fileData),
+      outputDir: home,
     });
   }
 
@@ -91,31 +93,26 @@ export class TauriService {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
+    const home = await homeDir();
     return await invoke<string>("extract_audio", {
       videoPath,
+      outputDir: home,
     });
   }
 
-  static async readFileAsBlob(filePath: string, mimeType: string = "audio/wav"): Promise<Blob> {
+  static async readFileAsBlob(filePath: string): Promise<Blob> {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
     const binaryData = await readFile(filePath);
-    return new Blob([binaryData], { type: mimeType });
-  }
-
-  static async getVideoBlobUrl(filePath: string): Promise<string> {
-    if (!isTauri()) {
-      throw new Error("This feature requires the Tauri app");
-    }
-    const videoBlob = await this.readFileAsBlob(filePath, "video/mp4");
-    return URL.createObjectURL(videoBlob);
+    return new Blob([binaryData], { type: "audio/wav" });
   }
 
   static async transcribeAudioLocal(
     audioPath: string,
     modelName: string,
-    language?: string
+    language?: string,
+    targetLanguage?: string
   ): Promise<SubtitleCue[]> {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
@@ -126,6 +123,7 @@ export class TauriService {
       audioPath,
       modelName,
       language,
+      targetLanguage,
     });
     return cues.map((c) => ({
       id: c.id,
@@ -135,11 +133,44 @@ export class TauriService {
     }));
   }
 
-  static async downloadWhisperModel(modelName: string): Promise<string> {
+  static async downloadWhisperModel(
+    modelName: string,
+    onProgress?: (percent: number, speedMBps: number, etaSeconds: number) => void
+  ): Promise<string> {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
-    return await invoke<string>("download_whisper_model", { modelName });
+
+    let unlisten: (() => void) | null = null;
+    if (onProgress) {
+      unlisten = await listen<{
+            modelName: string;
+            percent: number;
+            speedMBps: number;
+            etaSeconds: number;
+        }>("model-download-progress", (event: { payload: {
+            modelName: string;
+            percent: number;
+            speedMBps: number;
+            etaSeconds: number;
+        } }) => {
+        if (event.payload.modelName === modelName && onProgress) {
+          onProgress(
+            event.payload.percent,
+            event.payload.speedMBps,
+            event.payload.etaSeconds
+          );
+        }
+      });
+    }
+
+    try {
+      return await invoke<string>("download_whisper_model", { modelName });
+    } finally {
+      if (unlisten) {
+        unlisten();
+      }
+    }
   }
 
   static async deleteWhisperModel(modelName: string): Promise<void> {
@@ -160,6 +191,15 @@ export class TauriService {
     if (!isTauri()) {
       return false;
     }
-    return await invoke<boolean>("check_model_downloaded", { modelName });
+    return await invoke<boolean>("checkModelDownloaded", { modelName });
+  }
+
+  static async getVideoBlobUrl(filePath: string): Promise<string> {
+    if (!isTauri()) {
+      throw new Error("This feature requires the Tauri app");
+    }
+    const fileData = await readFile(filePath);
+    const blob = new Blob([fileData], { type: "video/mp4" });
+    return URL.createObjectURL(blob);
   }
 }

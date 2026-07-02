@@ -84,6 +84,7 @@ export const SettingsComponent = () => {
     setSubtitleStyle,
     downloadedModels,
     downloadingModels,
+    modelDownloadProgress,
     loadDownloadedModels,
     downloadModel,
     deleteModel,
@@ -344,79 +345,124 @@ export const SettingsComponent = () => {
                       />
                     </div>
                   </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs w-16 ${
-                        theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
-                      }`}>
-                        Size:
-                      </span>
-                      <span className={`text-xs ${
-                        theme === 'dark' ? 'text-gray-300' : 'text-gray-700'
-                      }`}>
-                        {model.size}
-                      </span>
+                  <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                                <span className={`text-xs w-16 ${
+                                    theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+                                }`}>
+                                    Size:
+                                </span>
+                                <span className={`text-xs ${
+                                    theme === 'dark' ? 'text-gray-300' : 'text-gray-700'
+                                }`}>
+                                    {model.size}
+                                </span>
+                            </div>
+                            
+                            <div className="flex items-center gap-2">
+                                {!isDownloaded && !modelDownloadProgress[model.id]?.error && (
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (isTauri()) downloadModel(model.id);
+                                        }}
+                                        disabled={isDownloading || !isTauri()}
+                                        className={`px-3 py-1.5 text-white rounded-lg text-sm font-medium flex items-center gap-1 ${
+                                            isTauri()
+                                                ? isDownloading
+                                                    ? 'bg-gray-600 cursor-not-allowed'
+                                                    : 'bg-blue-600 hover:bg-blue-700'
+                                                : 'bg-gray-400 cursor-not-allowed'
+                                        }`}
+                                    >
+                                        {isDownloading ? (
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                            <Download className="w-3 h-3" />
+                                        )}
+                                        {!isTauri()
+                                            ? 'Requires App'
+                                            : isDownloading
+                                                ? 'Downloading...'
+                                                : 'Download'}
+                                    </button>
+                                )}
+                                {modelDownloadProgress[model.id]?.error && (
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (isTauri()) downloadModel(model.id);
+                                        }}
+                                        className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium flex items-center gap-1"
+                                    >
+                                        <RefreshCw className="w-3 h-3" />
+                                        Retry
+                                    </button>
+                                )}
+                                {isDownloaded && (
+                                    <>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setWhisperModel(model.id);
+                                            }}
+                                            className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium"
+                                        >
+                                            Use
+                                        </button>
+                                        <button
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (isTauri()) setShowDeleteConfirm(model.id);
+                                            }}
+                                            disabled={!isTauri()}
+                                            className={`p-1.5 rounded-lg ${
+                                                isTauri()
+                                                    ? theme === 'dark'
+                                                        ? 'text-gray-400 hover:text-red-400 hover:bg-red-500/20'
+                                                        : 'text-gray-500 hover:text-red-500 hover:bg-red-50'
+                                                    : 'text-gray-400 cursor-not-allowed'
+                                            }`}
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                        {modelDownloadProgress[model.id] && (
+                            <div className="space-y-1">
+                                <div className={`h-2 rounded-full overflow-hidden ${
+                                    theme === 'dark' ? 'bg-gray-700' : 'bg-gray-200'
+                                }`}>
+                                    <div 
+                                        className="h-full bg-blue-500 transition-all duration-300"
+                                        style={{ width: `${Math.min(100, Math.max(0, modelDownloadProgress[model.id].percent))}%` }}
+                                    />
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className={`text-xs ${
+                                        theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+                                    }`}>
+                                        {modelDownloadProgress[model.id].percent.toFixed(1)}%
+                                    </span>
+                                    <div className="flex items-center gap-2">
+                                        <span className={`text-xs ${
+                                            theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+                                        }`}>
+                                            {modelDownloadProgress[model.id].speedMBps.toFixed(1)} MB/s
+                                        </span>
+                                        <span className={`text-xs ${
+                                            theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+                                        }`}>
+                                            ETA: {modelDownloadProgress[model.id].etaSeconds}s
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
-                    
-                    <div className="flex items-center gap-2">
-                      {!isDownloaded && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (isTauri()) downloadModel(model.id);
-                          }}
-                          disabled={isDownloading || !isTauri()}
-                          className={`px-3 py-1.5 text-white rounded-lg text-sm font-medium flex items-center gap-1 ${
-                            isTauri()
-                              ? isDownloading
-                                ? 'bg-gray-600 cursor-not-allowed'
-                                : 'bg-blue-600 hover:bg-blue-700'
-                              : 'bg-gray-400 cursor-not-allowed'
-                          }`}
-                        >
-                          {isDownloading ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Download className="w-3 h-3" />
-                          )}
-                          {!isTauri()
-                            ? 'Requires App'
-                            : isDownloading
-                              ? 'Downloading...'
-                              : 'Download'}
-                        </button>
-                      )}
-                      {isDownloaded && (
-                        <>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setWhisperModel(model.id);
-                            }}
-                            className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium"
-                          >
-                            Use
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (isTauri()) setShowDeleteConfirm(model.id);
-                            }}
-                            disabled={!isTauri()}
-                            className={`p-1.5 rounded-lg ${
-                              isTauri()
-                                ? theme === 'dark'
-                                  ? 'text-gray-400 hover:text-red-400 hover:bg-red-500/20'
-                                  : 'text-gray-500 hover:text-red-500 hover:bg-red-50'
-                                : 'text-gray-400 cursor-not-allowed'
-                            }`}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
                 </div>
                 
                 {showDeleteConfirm === model.id && (
@@ -471,6 +517,35 @@ export const SettingsComponent = () => {
           <Languages className="w-4 h-4" />
           Subtitle Style
         </h3>
+
+        {/* Subtitle Preview Box */}
+        <div className={`relative rounded-xl overflow-hidden border ${
+          theme === 'dark' 
+            ? 'bg-gradient-to-br from-gray-900 to-gray-800 border-gray-700' 
+            : 'bg-gradient-to-br from-gray-100 to-gray-200 border-gray-300'
+        }`}>
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="text-xs opacity-20">
+              Video Preview Placeholder
+            </div>
+          </div>
+          <div className="relative h-40 flex items-end justify-center p-4">
+            <div
+              style={{
+                fontFamily: subtitleStyle.fontName,
+                fontSize: `${subtitleStyle.fontSize}px`,
+                color: subtitleStyle.primaryColor,
+                backgroundColor: subtitleStyle.backColor,
+                textShadow: `2px 2px 4px ${subtitleStyle.outlineColor}`,
+                fontWeight: subtitleStyle.bold ? 'bold' : 'normal',
+                fontStyle: subtitleStyle.italic ? 'italic' : 'normal',
+              }}
+              className="text-center px-6 py-2 rounded-lg"
+            >
+              Sample Subtitle Text / နမူနာ စာတန်းထိုး
+            </div>
+          </div>
+        </div>
 
         <div className="space-y-2">
           <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>

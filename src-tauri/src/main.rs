@@ -67,17 +67,49 @@ async fn download_ffmpeg(_app: AppHandle) -> Result<String, String> {
     };
 
     let zip_path = app_dir.join(filename);
+    let ffmpeg_path = app_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+
+    // Check if ffmpeg already exists
+    if ffmpeg_path.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&ffmpeg_path)
+                .map_err(|e| e.to_string())?
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&ffmpeg_path, perms).map_err(|e| e.to_string())?;
+        }
+        return Ok(ffmpeg_path.to_string_lossy().to_string());
+    }
+
+    // Delete any existing corrupted download
+    if zip_path.exists() {
+        std::fs::remove_file(&zip_path).ok();
+    }
+
     let mut file = File::create(&zip_path).map_err(|e| e.to_string())?;
 
-    let response = reqwest::get(url).await.map_err(|e| e.to_string())?;
-    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-    file.write_all(&bytes).map_err(|e| e.to_string())?;
+    let response = reqwest::get(url).await.map_err(|e| format!("Failed to download ffmpeg: {}", e))?;
+    let content_length = response.content_length().unwrap_or(0);
+    let bytes = response.bytes().await.map_err(|e| format!("Failed to read download bytes: {}", e))?;
 
-    let ffmpeg_path = app_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
-    let file = File::open(&zip_path).map_err(|e| e.to_string())?;
+    // Verify download size
+    if content_length > 0 && bytes.len() as u64 != content_length {
+        std::fs::remove_file(&zip_path).ok();
+        return Err(format!("Download incomplete: expected {} bytes, got {}", content_length, bytes.len()));
+    }
+
+    file.write_all(&bytes).map_err(|e| format!("Failed to write file: {}", e))?;
+    drop(file); // Close file to ensure it's flushed
+
+    let file = File::open(&zip_path).map_err(|e| format!("Failed to open archive: {}", e))?;
 
     if zip_path.extension().and_then(|s| s.to_str()) == Some("zip") {
-        let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
+        let mut archive = ZipArchive::new(file).map_err(|e| {
+            std::fs::remove_file(&zip_path).ok();
+            format!("Invalid zip archive: {}", e)
+        })?;
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
             if let Some(name) = entry.name().split('/').last() {
@@ -119,7 +151,7 @@ async fn download_ffmpeg(_app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn download_whisper_model(_app: AppHandle, model_name: String) -> Result<String, String> {
+async fn download_whisper_model(app: AppHandle, model_name: String) -> Result<String, String> {
     #[cfg(feature = "whisper")]
     {
         let app_dir = get_app_dir();
@@ -133,15 +165,68 @@ async fn download_whisper_model(_app: AppHandle, model_name: String) -> Result<S
             return Ok(model_path.to_string_lossy().to_string());
         }
 
+        // Delete any existing corrupted download
+        if model_path.exists() {
+            std::fs::remove_file(&model_path).ok();
+        }
+
         let url = format!(
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}?download=true",
             model_filename
         );
 
-        let mut file = File::create(&model_path).map_err(|e| e.to_string())?;
-        let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
-        let bytes = response.bytes().await.map_err(|e| e.to_string())?;
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        let mut file = File::create(&model_path).map_err(|e| format!("Failed to create model file: {}", e))?;
+        let response = reqwest::get(&url).await.map_err(|e| format!("Failed to download model: {}", e))?;
+        let content_length = response.content_length().unwrap_or(0);
+        
+        let mut stream = response.bytes_stream();
+        let mut downloaded: u64 = 0;
+        let mut start_time = std::time::Instant::now();
+        let mut last_update = std::time::Instant::now();
+        let mut last_downloaded = 0;
+
+        while let Some(chunk) = futures_util::TryStreamExt::try_next(&mut stream).await.map_err(|e| format!("Failed to read model chunk: {}", e))? {
+            file.write_all(&chunk).map_err(|e| format!("Failed to write model chunk: {}", e))?;
+            downloaded += chunk.len() as u64;
+
+            // Update progress every 100ms
+            let now = std::time::Instant::now();
+            if now.duration_since(last_update) >= std::time::Duration::from_millis(100) {
+                let elapsed = now.duration_since(start_time).as_secs_f64();
+                let time_since_last = now.duration_since(last_update).as_secs_f64();
+                let downloaded_since_last = downloaded - last_downloaded;
+                let speed_bytes_per_sec = if time_since_last > 0.0 { downloaded_since_last as f64 / time_since_last } else { 0.0 };
+                let speed_mb_per_sec = speed_bytes_per_sec / (1024.0 * 1024.0);
+                let percent = if content_length > 0 {
+                    (downloaded as f64 / content_length as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let eta_seconds = if speed_bytes_per_sec > 0.0 && content_length > 0 {
+                    ((content_length - downloaded) as f64 / speed_bytes_per_sec) as u64
+                } else {
+                    0
+                };
+
+                app.emit("model-download-progress", (
+                    model_name.clone(),
+                    percent,
+                    speed_mb_per_sec,
+                    eta_seconds
+                )).ok();
+
+                last_update = now;
+                last_downloaded = downloaded;
+            }
+        }
+
+        // Verify download size
+        if content_length > 0 && downloaded != content_length {
+            std::fs::remove_file(&model_path).ok();
+            return Err(format!("Model download incomplete: expected {} bytes, got {}", content_length, downloaded));
+        }
+
+        drop(file); // Close file to ensure it's flushed
 
         Ok(model_path.to_string_lossy().to_string())
     }
@@ -221,20 +306,16 @@ async fn transcribe_audio_local(
     audio_path: String,
     model_name: String,
     language: Option<String>,
+    target_language: Option<String>,
 ) -> Result<Vec<SubtitleCue>, String> {
-    println!("Starting transcription for: {}", audio_path);
     let app_dir = get_app_dir();
     let models_dir = app_dir.join("models");
     let model_path = models_dir.join(format!("ggml-{}.bin", model_name));
-    println!("Model path: {:?}", model_path);
 
     if !model_path.exists() {
-        println!("Model not found, downloading...");
-        download_whisper_model(app.clone(), model_name.clone()).await?;
-        println!("Model downloaded!");
+        download_whisper_model(app, model_name).await?;
     }
 
-    println!("Loading model...");
     let params = WhisperContextParameters::default();
     let ctx = WhisperContext::new_with_params(&model_path.to_string_lossy(), params)
         .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
@@ -252,7 +333,8 @@ async fn transcribe_audio_local(
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_single_segment(false);
-    params.set_translate(false);
+    // Set translate to true if target_language is "en" (Whisper only supports translating to English)
+    params.set_translate(target_language.as_deref() == Some("en"));
     params.set_language(language.as_deref());
     params.set_print_special(false);
     params.set_print_progress(false);
@@ -598,12 +680,9 @@ async fn write_file(
     _app: AppHandle,
     file_name: String,
     file_data: Vec<u8>,
+    output_dir: String,
 ) -> Result<String, String> {
-    // Create temporary directory for file output
-    let temp_dir = std::env::temp_dir().join("subplayer");
-    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    
-    let output_path = temp_dir.join(format!(
+    let output_path = PathBuf::from(output_dir).join(format!(
         "{}_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -622,40 +701,30 @@ async fn write_file(
 async fn extract_audio(
     app: AppHandle,
     video_path: String,
+    output_dir: String,
 ) -> Result<String, String> {
-    println!("Extracting audio from: {}", video_path);
     let app_dir = get_app_dir();
     let ffmpeg_path = app_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
-    println!("FFmpeg path: {:?}", ffmpeg_path);
 
     if !ffmpeg_path.exists() {
-        println!("FFmpeg not found, downloading...");
         download_ffmpeg(app.clone()).await?;
-        println!("FFmpeg downloaded!");
     }
 
-    // Create temporary directory for audio output
-    let temp_dir = std::env::temp_dir().join("subplayer");
-    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
-    
-    let output_path = temp_dir.join(format!(
+    let output_path = PathBuf::from(output_dir).join(format!(
         "extracted_{}.wav",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
     ));
-    println!("Output path: {:?}", output_path);
 
     let shell = app.shell();
     let temp_ffmpeg = std::env::temp_dir().join(ffmpeg_path.file_name().unwrap());
-    std::fs::copy(&ffmpeg_path, &temp_ffmpeg).map_err(|e| format!("Failed to copy FFmpeg: {}", e))?;
-    println!("FFmpeg copied to temp dir: {:?}", temp_ffmpeg);
+    std::fs::copy(&ffmpeg_path, &temp_ffmpeg).map_err(|e| e.to_string())?;
 
     let sidecar = shell.sidecar(temp_ffmpeg.to_str().unwrap())
-        .map_err(|e| format!("Failed to get FFmpeg sidecar: {}", e))?;
+        .map_err(|e| format!("Failed to get FFmpeg: {}", e))?;
 
-    println!("Running FFmpeg command...");
     let output = sidecar
         .args([
             "-i",
@@ -672,7 +741,7 @@ async fn extract_audio(
         ])
         .output()
         .await
-        .map_err(|e| format!("FFmpeg failed to run: {}", e))?;
+        .map_err(|e| format!("FFmpeg failed: {}", e))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -690,7 +759,6 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             open_video_dialog,
             open_subtitle_dialog,

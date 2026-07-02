@@ -32,6 +32,8 @@ interface AppState {
     setActiveTranslatedTrackId: (id: string | null) => void;
     subtitleDisplayMode: SubtitleDisplayMode;
     setSubtitleDisplayMode: (mode: SubtitleDisplayMode) => void;
+    showSubtitles: boolean;
+    setShowSubtitles: (show: boolean) => void;
     currentTime: number;
     setCurrentTime: (time: number) => void;
     isPlaying: boolean;
@@ -58,12 +60,16 @@ interface AppState {
     setUseLocalWhisper: (use: boolean) => void;
     whisperModel: string;
     setWhisperModel: (model: string) => void;
+    targetLanguage: string;
+    setTargetLanguage: (lang: string) => void;
 
     // Model management
     downloadedModels: string[];
     setDownloadedModels: (models: string[]) => void;
     downloadingModels: Set<string>;
     setDownloadingModels: (models: Set<string>) => void;
+    modelDownloadProgress: Record<string, { percent: number; speedMBps: number; etaSeconds: number; error: boolean }>;
+    setModelDownloadProgress: (modelName: string, progress: { percent: number; speedMBps: number; etaSeconds: number; error: boolean }) => void;
     loadDownloadedModels: () => Promise<void>;
     downloadModel: (modelName: string) => Promise<void>;
     deleteModel: (modelName: string) => Promise<void>;
@@ -94,6 +100,8 @@ export const useAppStore = create<AppState>()(
             setActiveTranslatedTrackId: (id: string | null) => set({ activeTranslatedTrackId: id }),
             subtitleDisplayMode: "dual",
             setSubtitleDisplayMode: (mode: SubtitleDisplayMode) => set({ subtitleDisplayMode: mode }),
+            showSubtitles: true,
+            setShowSubtitles: (show: boolean) => set({ showSubtitles: show }),
             currentTime: 0,
             setCurrentTime: (time: number) => set({ currentTime: time }),
             isPlaying: false,
@@ -173,12 +181,22 @@ export const useAppStore = create<AppState>()(
             setUseLocalWhisper: (use: boolean) => set({ useLocalWhisper: use }),
             whisperModel: "tiny",
             setWhisperModel: (model: string) => set({ whisperModel: model }),
+            targetLanguage: "en",
+            setTargetLanguage: (lang: string) => set({ targetLanguage: lang }),
 
             // Model management
             downloadedModels: [],
             setDownloadedModels: (models: string[]) => set({ downloadedModels: models }),
             downloadingModels: new Set(),
             setDownloadingModels: (models: Set<string>) => set({ downloadingModels: models }),
+            modelDownloadProgress: {},
+            setModelDownloadProgress: (modelName: string, progress) =>
+                set((state) => ({
+                    modelDownloadProgress: {
+                        ...state.modelDownloadProgress,
+                        [modelName]: progress,
+                    },
+                })),
             loadDownloadedModels: async () => {
                 try {
                     const models = await TauriService.listDownloadedModels();
@@ -189,20 +207,50 @@ export const useAppStore = create<AppState>()(
             },
             downloadModel: async (modelName: string) => {
                 const state = get();
-                if (state.downloadingModels.has(modelName)) return;
+                if (state.downloadingModels.has(modelName) && !state.modelDownloadProgress[modelName]?.error) return;
                 
                 const newDownloading = new Set(state.downloadingModels);
                 newDownloading.add(modelName);
-                set({ downloadingModels: newDownloading });
+                set({ 
+                    downloadingModels: newDownloading,
+                    modelDownloadProgress: {
+                        ...state.modelDownloadProgress,
+                        [modelName]: { percent: 0, speedMBps: 0, etaSeconds: 0, error: false }
+                    }
+                });
 
                 try {
-                    await TauriService.downloadWhisperModel(modelName);
+                    await TauriService.downloadWhisperModel(modelName, (percent, speedMBps, etaSeconds) => {
+                        set((s) => ({
+                            modelDownloadProgress: {
+                                ...s.modelDownloadProgress,
+                                [modelName]: { percent, speedMBps, etaSeconds, error: false }
+                            }
+                        }));
+                    });
                     await state.loadDownloadedModels();
+                    // Clear progress after successful download
+                    set((s) => {
+                        const newProgress = { ...s.modelDownloadProgress };
+                        delete newProgress[modelName];
+                        return { modelDownloadProgress: newProgress };
+                    });
                 } catch (err) {
                     console.error(`Failed to download model ${modelName}:`, err);
+                    set((s) => ({
+                        modelDownloadProgress: {
+                            ...s.modelDownloadProgress,
+                            [modelName]: { 
+                                ...(s.modelDownloadProgress[modelName] || { percent: 0, speedMBps: 0, etaSeconds: 0 }),
+                                error: true 
+                            }
+                        }
+                    }));
                 } finally {
                     const updatedDownloading = new Set(get().downloadingModels);
-                    updatedDownloading.delete(modelName);
+                    if (!get().modelDownloadProgress[modelName]?.error) {
+                        updatedDownloading.delete(modelName);
+                    }
                     set({ downloadingModels: updatedDownloading });
                 }
             },
@@ -242,6 +290,7 @@ export const useAppStore = create<AppState>()(
                 useLocalWhisper: state.useLocalWhisper,
                 whisperModel: state.whisperModel,
                 subtitleStyle: state.subtitleStyle,
+                targetLanguage: state.targetLanguage,
             }),
         }
     )

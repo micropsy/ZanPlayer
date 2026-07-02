@@ -14,7 +14,7 @@ import {
   FileVideo,
   Menu,
 } from "lucide-react";
-
+import appIcon from "../assets/icon.png";
 import { TauriService } from "../services/tauri";
 import { SettingsComponent } from "./Settings";
 import { cn } from "../utils/cn";
@@ -47,116 +47,32 @@ export const Sidebar = () => {
     setSeekTo,
     theme,
     setSidebarVisible,
+    targetLanguage,
+    setTargetLanguage,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<Tab>("main");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [shiftOffset, setShiftOffset] = useState<string>("0");
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState<string>("auto");
 
-  // Whisper supported languages
   const languages = [
-    { code: "auto", name: "Auto Detect" },
+    { code: "auto", name: "Auto (Detect)" },
     { code: "en", name: "English" },
-    { code: "zh", name: "Chinese" },
-    { code: "de", name: "German" },
-    { code: "es", name: "Spanish" },
-    { code: "ru", name: "Russian" },
-    { code: "ko", name: "Korean" },
-    { code: "fr", name: "French" },
-    { code: "ja", name: "Japanese" },
-    { code: "pt", name: "Portuguese" },
-    { code: "tr", name: "Turkish" },
-    { code: "pl", name: "Polish" },
-    { code: "ca", name: "Catalan" },
-    { code: "nl", name: "Dutch" },
-    { code: "ar", name: "Arabic" },
-    { code: "sv", name: "Swedish" },
-    { code: "it", name: "Italian" },
-    { code: "id", name: "Indonesian" },
-    { code: "hi", name: "Hindi" },
-    { code: "fi", name: "Finnish" },
-    { code: "vi", name: "Vietnamese" },
-    { code: "iw", name: "Hebrew" },
-    { code: "uk", name: "Ukrainian" },
-    { code: "el", name: "Greek" },
-    { code: "ms", name: "Malay" },
-    { code: "cs", name: "Czech" },
-    { code: "ro", name: "Romanian" },
-    { code: "da", name: "Danish" },
-    { code: "hu", name: "Hungarian" },
-    { code: "ta", name: "Tamil" },
-    { code: "no", name: "Norwegian" },
-    { code: "th", name: "Thai" },
-    { code: "ur", name: "Urdu" },
-    { code: "hr", name: "Croatian" },
-    { code: "bg", name: "Bulgarian" },
-    { code: "lt", name: "Lithuanian" },
-    { code: "la", name: "Latin" },
-    { code: "mi", name: "Maori" },
-    { code: "ml", name: "Malayalam" },
-    { code: "cy", name: "Welsh" },
-    { code: "sk", name: "Slovak" },
-    { code: "te", name: "Telugu" },
-    { code: "fa", name: "Persian" },
-    { code: "lv", name: "Latvian" },
-    { code: "bn", name: "Bengali" },
-    { code: "sr", name: "Serbian" },
-    { code: "az", name: "Azerbaijani" },
-    { code: "sl", name: "Slovenian" },
-    { code: "kn", name: "Kannada" },
-    { code: "et", name: "Estonian" },
-    { code: "mk", name: "Macedonian" },
-    { code: "br", name: "Breton" },
-    { code: "eu", name: "Basque" },
-    { code: "is", name: "Icelandic" },
-    { code: "hy", name: "Armenian" },
-    { code: "ne", name: "Nepali" },
-    { code: "mn", name: "Mongolian" },
-    { code: "bs", name: "Bosnian" },
-    { code: "kk", name: "Kazakh" },
-    { code: "sq", name: "Albanian" },
-    { code: "sw", name: "Swahili" },
-    { code: "gl", name: "Galician" },
-    { code: "mr", name: "Marathi" },
-    { code: "pa", name: "Punjabi" },
-    { code: "si", name: "Sinhala" },
-    { code: "km", name: "Khmer" },
-    { code: "sn", name: "Shona" },
-    { code: "yo", name: "Yoruba" },
-    { code: "so", name: "Somali" },
-    { code: "af", name: "Afrikaans" },
-    { code: "oc", name: "Occitan" },
-    { code: "ka", name: "Georgian" },
-    { code: "be", name: "Belarusian" },
-    { code: "tg", name: "Tajik" },
-    { code: "sd", name: "Sindhi" },
-    { code: "gu", name: "Gujarati" },
-    { code: "am", name: "Amharic" },
-    { code: "yi", name: "Yiddish" },
-    { code: "lo", name: "Lao" },
-    { code: "uz", name: "Uzbek" },
-    { code: "fo", name: "Faroese" },
-    { code: "ht", name: "Haitian Creole" },
-    { code: "ps", name: "Pashto" },
-    { code: "tk", name: "Turkmen" },
-    { code: "nn", name: "Nynorsk" },
-    { code: "mt", name: "Maltese" },
-    { code: "sa", name: "Sanskrit" },
-    { code: "lb", name: "Luxembish" },
     { code: "my", name: "Burmese" },
-    { code: "bo", name: "Tibetan" },
-    { code: "tl", name: "Tagalog" },
-    { code: "mg", name: "Malagasy" },
-    { code: "as", name: "Assamese" },
-    { code: "tt", name: "Tatar" },
-    { code: "haw", name: "Hawaiian" },
-    { code: "ln", name: "Lingala" },
-    { code: "ha", name: "Hausa" },
-    { code: "ba", name: "Bashkir" },
-    { code: "jw", name: "Javanese" },
-    { code: "su", name: "Sundanese" },
+    { code: "es", name: "Spanish" },
+    { code: "fr", name: "French" },
+    { code: "de", name: "German" },
+    { code: "zh", name: "Chinese (Simplified)" },
+    { code: "zh-TW", name: "Chinese (Traditional)" },
+    { code: "ja", name: "Japanese" },
+    { code: "ko", name: "Korean" },
+    { code: "pt", name: "Portuguese" },
+    { code: "ru", name: "Russian" },
+    { code: "ar", name: "Arabic" },
+    { code: "hi", name: "Hindi" },
+    { code: "th", name: "Thai" },
+    { code: "vi", name: "Vietnamese" },
   ];
 
   const onDragOver = useCallback((e: React.DragEvent) => {
@@ -312,15 +228,8 @@ export const Sidebar = () => {
       const videoFile = await TauriService.openVideoDialog();
       if (videoFile) {
         setCurrentVideoPath(videoFile.path);
-        // Only set URL if running in Tauri environment
-        if (isTauriApp) {
-          // In Tauri, we'll use the path directly through Tauri's filesystem API
-          // But for now, let's just set the URL to be handled specially
-          // In a real Tauri app, you'd use tauri-plugin-fs to get a proper asset URL
-          setCurrentVideoUrl(null); // We'll update the VideoPlayer component to handle this case
-        } else {
-          setCurrentVideoUrl(null);
-        }
+        const url = `file://${encodeURIComponent(videoFile.path)}`;
+        setCurrentVideoUrl(url);
       }
     } catch (error) {
       setErrorMessage(`Error selecting video: ${(error as Error).message}`);
@@ -365,46 +274,41 @@ export const Sidebar = () => {
 
     try {
       if (currentVideoPath) {
-        console.log("Step 1: Extracting audio from native file...", currentVideoPath);
         const audioPath = await TauriService.extractAudio(currentVideoPath);
-        console.log("Step 1 complete: Audio path", audioPath);
         extractedAudioPath = audioPath;
         setProgress("extracting", 100);
       } else if (currentVideo) {
         // For local whisper with uploaded file, we need to write it to disk first
         setProgress("saving", 25);
-        console.log("Step 1: Writing uploaded file to disk...");
         const fileArrayBuffer = await currentVideo.arrayBuffer();
         const fileUint8Array = new Uint8Array(fileArrayBuffer);
         tempVideoPath = await TauriService.writeFile(currentVideo.name, fileUint8Array);
-        console.log("Step 1 complete: Temp video path", tempVideoPath);
         setProgress("extracting", 50);
         
-        console.log("Step 2: Extracting audio...");
         const audioPath = await TauriService.extractAudio(tempVideoPath);
-        console.log("Step 2 complete: Audio path", audioPath);
         extractedAudioPath = audioPath;
         setProgress("extracting", 100);
       }
 
-      if (!extractedAudioPath) {
-        throw new Error("Failed to extract audio");
-      }
-
       setProgress("transcribing", 0);
-      const whisperLanguage = selectedLanguage === "auto" ? undefined : selectedLanguage;
-      const cues = await TauriService.transcribeAudioLocal(
+      let cues;
+      if (!extractedAudioPath) {
+        throw new Error("Local transcription requires extracting audio first");
+      }
+      const languageToUse = targetLanguage === "auto" ? undefined : targetLanguage;
+      cues = await TauriService.transcribeAudioLocal(
         extractedAudioPath,
         whisperModel,
-        whisperLanguage
+        undefined, // source language - let whisper auto-detect
+        languageToUse
       );
       setProgress("transcribing", 100);
 
-      const languageName = languages.find(l => l.code === selectedLanguage)?.name || "Unknown";
+      const selectedLang = languages.find(l => l.code === targetLanguage);
       const newTrack: SubtitleTrack = {
         id: `track-${Date.now()}`,
-        name: `Auto-Generated (${languageName})`,
-        language: languageName,
+        name: `Auto-Generated (${selectedLang?.name || "English"})`,
+        language: selectedLang?.name || "English",
         cues,
         isGenerated: true,
       };
@@ -414,8 +318,7 @@ export const Sidebar = () => {
       setTimeout(() => setProgress("idle", 0), 1500);
     } catch (error) {
       console.error("Subtitle generation error:", error);
-      const errMsg = (error as Error).message || String(error);
-      setErrorMessage(`Error: ${errMsg}`);
+      setErrorMessage(`Error: ${(error as Error).message}`);
       setProgress("idle", 0);
     }
   };
@@ -520,10 +423,13 @@ export const Sidebar = () => {
         theme === "dark" ? "border-gray-700" : "border-gray-200"
       )}>
         {/* App Logo */}
-        <div className="flex items-center gap-2 px-2">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-            <Languages className="w-5 h-5 text-white" />
-          </div>
+        <div className="flex items-center gap-3 px-4 py-3">
+          <img 
+            src={appIcon} 
+            alt="Sub Player" 
+            className="w-10 h-10 rounded-lg"
+          />
+          <span className="text-xl font-bold text-white">Sub Player</span>
         </div>
         <button
           onClick={() => setActiveTab("main")}
@@ -599,15 +505,6 @@ export const Sidebar = () => {
               ? "border-gray-700 bg-gradient-to-b from-gray-800 to-gray-900"
               : "border-gray-200 bg-gradient-to-b from-gray-50 to-white"
           )}>
-            <h2 className={cn(
-              "text-2xl font-bold mb-4 flex items-center gap-2",
-              theme === "dark" ? "text-white" : "text-gray-900"
-            )}>
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-              <Languages className="w-5 h-5 text-white" />
-            </div>
-            Sub Player
-          </h2>
 
             {/* Error/Success Messages */}
             {errorMessage && (
@@ -676,17 +573,25 @@ export const Sidebar = () => {
 
             {/* Controls */}
             <div className="space-y-3">
-              {/* Language Selector */}
-              <div className="space-y-1">
+              <button
+                onClick={handleGenerateSubtitles}
+                disabled={isProcessing || (!currentVideo && !currentVideoPath)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-gray-600 disabled:to-gray-700 text-white rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] shadow-lg shadow-green-900/20"
+              >
+                <Languages className="w-5 h-5" />
+                {getStepText() || "Auto-Transcribe"}
+              </button>
+
+              <div className="space-y-2">
                 <label className={cn(
                   "block text-xs font-semibold uppercase tracking-wider",
                   theme === "dark" ? "text-gray-400" : "text-gray-500"
                 )}>
-                  Video Language
+                  Translate To
                 </label>
                 <select
-                  value={selectedLanguage}
-                  onChange={(e) => setSelectedLanguage(e.target.value)}
+                  value={targetLanguage}
+                  onChange={(e) => setTargetLanguage(e.target.value)}
                   className={cn(
                     "w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2",
                     theme === "dark"
@@ -699,15 +604,6 @@ export const Sidebar = () => {
                   ))}
                 </select>
               </div>
-
-              <button
-                onClick={handleGenerateSubtitles}
-                disabled={isProcessing || (!currentVideo && !currentVideoPath)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-gray-600 disabled:to-gray-700 text-white rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] shadow-lg shadow-green-900/20"
-              >
-                <Languages className="w-5 h-5" />
-                {getStepText() || "Auto-Transcribe"}
-              </button>
 
               <button
                 onClick={handleLoadSubtitleFile}
@@ -839,9 +735,7 @@ export const Sidebar = () => {
                       <p className={cn(
                         "text-xs mt-0.5",
                         theme === "dark" ? "text-gray-500" : "text-gray-400"
-                      )}>
-                        {track.language} • {track.cues.length} cues
-                      </p>
+                      )}>{track.cues.length} cues</p>
                     </div>
                     <div className="flex items-center gap-1">
                       {track.isGenerated && (

@@ -8,10 +8,11 @@ import {
   Maximize,
   Minimize,
   Captions,
-  Languages,
-  Eye,
+  CaptionsOff,
   SkipForward,
   SkipBack,
+  FileVideo,
+  CheckCircle2,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { TauriService, isTauri } from "../services/tauri";
@@ -23,6 +24,7 @@ export const VideoPlayer = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [videoSource, setVideoSource] = useState<string | null>(null);
+  const [showCCMenu, setShowCCMenu] = useState(false);
   const {
     currentVideoUrl,
     currentVideoPath,
@@ -33,6 +35,9 @@ export const VideoPlayer = () => {
     activeSubtitleTrackId,
     activeTranslatedTrackId,
     subtitleDisplayMode,
+    setSubtitleDisplayMode,
+    showSubtitles,
+    setShowSubtitles,
     seekTo,
     setSeekTo,
     subtitleStyle,
@@ -179,6 +184,19 @@ export const VideoPlayer = () => {
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
 
+  // Close CC menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (showCCMenu && !target.closest('[data-cc-menu]')) {
+        setShowCCMenu(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showCCMenu]);
+
   // Handle seeking from store
   useEffect(() => {
     if (seekTo !== null && videoRef.current) {
@@ -267,9 +285,24 @@ export const VideoPlayer = () => {
               }
             }}
           />
+          
+          {/* Audio-only visualizer placeholder */}
+          {videoRef.current && videoRef.current.videoWidth === 0 && videoRef.current.videoHeight === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800">
+              <div className="flex flex-col items-center gap-6">
+                <div className="w-32 h-32 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl shadow-2xl flex items-center justify-center">
+                  <FileVideo className="w-16 h-16 text-white" />
+                </div>
+                <div className="text-center">
+                  <p className="text-white text-xl font-semibold">Now Playing</p>
+                  <p className="text-gray-400 text-sm">Audio File</p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Subtitle Overlay */}
-          {(currentOriginalCue || currentTranslatedCue) && (
+          {showSubtitles && (currentOriginalCue || currentTranslatedCue) && (
             <div
               className={cn(
                 "absolute left-0 right-0 flex flex-col items-center px-4 pointer-events-none",
@@ -393,7 +426,61 @@ export const VideoPlayer = () => {
               </div>
 
               <div className="flex items-center gap-3">
-                <SubtitleModeSwitcher />
+                <div className="relative" data-cc-menu>
+                  <button
+                    onClick={() => setShowCCMenu(!showCCMenu)}
+                    className="text-white hover:text-blue-400 transition-colors"
+                    title={showSubtitles ? "Subtitle Settings" : "Show Subtitles"}
+                  >
+                    {showSubtitles ? <Captions className="w-6 h-6" /> : <CaptionsOff className="w-6 h-6" />}
+                  </button>
+                  
+                  {showCCMenu && (
+                    <div className="absolute bottom-full right-0 mb-3 bg-gray-900/95 backdrop-blur rounded-xl shadow-2xl border border-gray-700 min-w-[200px] overflow-hidden">
+                      <div className="p-3 border-b border-gray-700">
+                        <button
+                          onClick={() => setShowSubtitles(!showSubtitles)}
+                          className="w-full flex items-center gap-3 px-3 py-2 text-sm text-white hover:bg-gray-800 rounded-lg transition-colors"
+                        >
+                          <div className={cn(
+                            "w-5 h-5 rounded border-2 flex items-center justify-center",
+                            showSubtitles ? "bg-blue-600 border-blue-600" : "border-gray-500"
+                          )}>
+                            {showSubtitles && <div className="w-2 h-2 bg-white rounded-full" />}
+                          </div>
+                          Show Subtitles
+                        </button>
+                      </div>
+                      <div className="p-2">
+                        <p className="text-xs text-gray-400 px-2 py-1">Caption Mode</p>
+                        {[
+                          { mode: "original", label: "Original Only" },
+                          { mode: "translated", label: "Translated Only" },
+                          { mode: "dual", label: "Dual Subtitles" },
+                        ].map(({ mode, label }) => (
+                          <button
+                            key={mode}
+                            onClick={() => {
+                              setSubtitleDisplayMode(mode as SubtitleDisplayMode);
+                              setShowCCMenu(false);
+                            }}
+                            className={cn(
+                              "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-lg transition-colors",
+                              subtitleDisplayMode === mode 
+                                ? "text-blue-400 bg-blue-900/30" 
+                                : "text-gray-300 hover:bg-gray-800"
+                            )}
+                          >
+                            {label}
+                            {subtitleDisplayMode === mode && (
+                              <CheckCircle2 className="w-4 h-4" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={toggleFullscreen}
                   className="text-white hover:text-blue-400 transition-colors"
@@ -406,8 +493,8 @@ export const VideoPlayer = () => {
         </>
       ) : (
         <div className="flex flex-col items-center justify-center w-full h-full text-gray-500">
-          <Eye className="w-16 h-16 mb-4 opacity-50" />
-          <p className="text-lg">Select a video file to start</p>
+          <FileVideo className="w-16 h-16 mb-4 opacity-50" />
+          <p className="text-lg">Select a video or audio file to start</p>
           <div className="mt-6 text-sm text-gray-600 max-w-md text-center">
             <p className="mb-2">Keyboard shortcuts:</p>
             <div className="grid grid-cols-2 gap-2">
@@ -420,58 +507,6 @@ export const VideoPlayer = () => {
           </div>
         </div>
       )}
-    </div>
-  );
-};
-
-interface SubtitleModeSwitcherProps {
-  className?: string;
-}
-
-const SubtitleModeSwitcher = ({ className }: SubtitleModeSwitcherProps) => {
-  const { subtitleDisplayMode, setSubtitleDisplayMode } = useAppStore();
-
-  const modes: { mode: SubtitleDisplayMode; label: string; icon: React.ReactNode }[] = [
-    {
-      mode: "original",
-      label: "Original",
-      icon: <Captions className="w-4 h-4" />,
-    },
-    {
-      mode: "translated",
-      label: "Translated",
-      icon: <Languages className="w-4 h-4" />,
-    },
-    {
-      mode: "dual",
-      label: "Dual",
-      icon: (
-        <div className="flex">
-          <Captions className="w-4 h-4 -mr-1" />
-          <Languages className="w-4 h-4" />
-        </div>
-      ),
-    },
-  ];
-
-  return (
-    <div className={cn("flex items-center bg-gray-800/80 backdrop-blur rounded-lg p-1", className)}>
-      {modes.map(({ mode, label, icon }) => (
-        <button
-          key={mode}
-          onClick={() => setSubtitleDisplayMode(mode)}
-          className={cn(
-            "flex items-center gap-1 px-3 py-1.5 rounded-md text-sm font-medium transition-all",
-            subtitleDisplayMode === mode
-              ? "bg-blue-600 text-white shadow-lg"
-              : "text-gray-400 hover:text-white hover:bg-gray-700"
-          )}
-          title={label}
-        >
-          {icon}
-          <span className="hidden sm:inline">{label}</span>
-        </button>
-      ))}
     </div>
   );
 };
