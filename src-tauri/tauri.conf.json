@@ -34,7 +34,7 @@
       "endpoints": [
         "https://github.com/micropsy/ZanPlayer/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4MDNFNTU3MTgxNzM3REMKUldUY054Y1lWK1VET0R6Tk1DTTFoZXhiaHk1ajNNUEVLeE4zRzZSLzhIQ1FQdWdaa3ByaGhSei8K",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDczMkE0OUUwQzQyRjkyQjcKUldTM2tpL0U0RWtxYzkzempqL1dOeDRHekN4QTZnQXd5TFFWMWNuckNzdGZSejJ3NVdPN0p6TFkK",
       "installMode": "passive"
     }
   },
