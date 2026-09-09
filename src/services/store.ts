@@ -63,8 +63,18 @@ interface AppState {
     setWhisperModel: (model: string) => void;
     targetLanguage: string;
     setTargetLanguage: (lang: string) => void;
+    sourceLanguage: string;
+    setSourceLanguage: (lang: string) => void;
     isTranscribing: boolean;
     setIsTranscribing: (val: boolean) => void;
+
+    // Offline translation
+    translationModelAvailable: boolean;
+    setTranslationModelAvailable: (available: boolean) => void;
+    translationModelLoading: boolean;
+    setTranslationModelLoading: (loading: boolean) => void;
+    translationError: string | null;
+    setTranslationError: (error: string | null) => void;
 
     // Model management
     downloadedModels: string[];
@@ -193,8 +203,18 @@ export const useAppStore = create<AppState>()(
             setWhisperModel: (model: string) => set({ whisperModel: model }),
             targetLanguage: "en",
             setTargetLanguage: (lang: string) => set({ targetLanguage: lang }),
+            sourceLanguage: "auto",
+            setSourceLanguage: (lang: string) => set({ sourceLanguage: lang }),
             isTranscribing: false,
             setIsTranscribing: (val: boolean) => set({ isTranscribing: val }),
+
+            // Offline translation
+            translationModelAvailable: false,
+            setTranslationModelAvailable: (available: boolean) => set({ translationModelAvailable: available }),
+            translationModelLoading: false,
+            setTranslationModelLoading: (loading: boolean) => set({ translationModelLoading: loading }),
+            translationError: null,
+            setTranslationError: (error: string | null) => set({ translationError: error }),
 
             // Model management
             downloadedModels: [],
@@ -305,6 +325,7 @@ export const useAppStore = create<AppState>()(
                 whisperModel: state.whisperModel,
                 subtitleStyle: state.subtitleStyle,
                 targetLanguage: state.targetLanguage,
+                sourceLanguage: state.sourceLanguage,
             }),
         }
     )

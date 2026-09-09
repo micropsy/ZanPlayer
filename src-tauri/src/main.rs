@@ -229,6 +229,160 @@ async fn check_model_downloaded(model_name: String) -> Result<bool, String> {
     }
 }
 
+const NLLB_FILES: &[(&str, &str)] = &[
+    ("config.json", "config.json"),
+    ("generation_config.json", "generation_config.json"),
+    ("tokenizer.json", "tokenizer.json"),
+    ("tokenizer_config.json", "tokenizer_config.json"),
+    ("special_tokens_map.json", "special_tokens_map.json"),
+    ("onnx/encoder_model_quantized.onnx", "onnx/encoder_model_quantized.onnx"),
+    ("onnx/decoder_model_merged_quantized.onnx", "onnx/decoder_model_merged_quantized.onnx"),
+];
+
+const NLLB_BASE_URL: &str =
+    "https://huggingface.co/Xenova/nllb-200-distilled-600M/resolve/main";
+
+#[derive(Clone, serde::Serialize)]
+struct NllbProgressPayload {
+    file: String,
+    percent: f64,
+    #[serde(rename = "speedMBps")]
+    speed_mb_per_sec: f64,
+    #[serde(rename = "etaSeconds")]
+    eta_seconds: u64,
+    #[serde(rename = "fileBytes")]
+    file_bytes: u64,
+    #[serde(rename = "fileDone")]
+    file_done: u64,
+}
+
+fn nllb_model_dir() -> PathBuf {
+    get_app_dir().join("nllb-200")
+}
+
+fn nllb_model_ready() -> bool {
+    let dir = nllb_model_dir();
+    NLLB_FILES.iter().all(|(rel, _)| dir.join(rel).exists())
+}
+
+#[tauri::command]
+async fn is_translation_model_downloaded() -> Result<bool, String> {
+    Ok(nllb_model_ready())
+}
+
+#[tauri::command]
+async fn get_translation_model_path() -> Result<String, String> {
+    Ok(nllb_model_dir().to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn download_nllb_model(app: AppHandle) -> Result<String, String> {
+    let dir = nllb_model_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    if nllb_model_ready() {
+        return Ok(dir.to_string_lossy().to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("ZanPlayer/1.0 (macOS)")
+        .build()
+        .map_err(|e| format!("Failed to build client: {}", e))?;
+
+    for (rel_path, url_path) in NLLB_FILES {
+        let final_path = dir.join(rel_path);
+        if final_path.exists() {
+            continue;
+        }
+        if let Some(parent) = final_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let part_path = dir.join(format!("{}.part", rel_path.replace('/', "__")));
+        let url = format!("{}/{}", NLLB_BASE_URL, url_path);
+
+        let response = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download translation model: {}", e))?;
+        if !response.status().is_success() {
+            return Err(format!("Download failed: HTTP {}", response.status()));
+        }
+        let content_length = response.content_length().unwrap_or(0);
+        let file_name = rel_path.to_string();
+
+        let mut file = File::create(&part_path)
+            .map_err(|e| format!("Failed to create model file: {}", e))?;
+        let mut stream = response.bytes_stream();
+        let mut downloaded: u64 = 0;
+        let mut last_update = std::time::Instant::now();
+        let mut last_downloaded = 0;
+
+        while let Some(chunk) = futures_util::TryStreamExt::try_next(&mut stream)
+            .await
+            .map_err(|e| format!("Failed to read model chunk: {}", e))?
+        {
+            file.write_all(&chunk)
+                .map_err(|e| format!("Failed to write model chunk: {}", e))?;
+            downloaded += chunk.len() as u64;
+
+            let now = std::time::Instant::now();
+            if now.duration_since(last_update) >= std::time::Duration::from_millis(100) {
+                let elapsed = now.duration_since(last_update).as_secs_f64();
+                let speed_bytes_per_sec =
+                    if elapsed > 0.0 { (downloaded - last_downloaded) as f64 / elapsed } else { 0.0 };
+                let percent = if content_length > 0 {
+                    (downloaded as f64 / content_length as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let eta_seconds = if speed_bytes_per_sec > 0.0 && content_length > 0 {
+                    ((content_length - downloaded) as f64 / speed_bytes_per_sec) as u64
+                } else {
+                    0
+                };
+                app.emit(
+                    "nllb-download-progress",
+                    NllbProgressPayload {
+                        file: file_name.clone(),
+                        percent,
+                        speed_mb_per_sec: speed_bytes_per_sec / (1024.0 * 1024.0),
+                        eta_seconds,
+                        file_bytes: content_length,
+                        file_done: downloaded,
+                    },
+                )
+                .ok();
+                last_update = now;
+                last_downloaded = downloaded;
+            }
+        }
+
+        if content_length > 0 && downloaded != content_length {
+            std::fs::remove_file(&part_path).ok();
+            return Err(format!(
+                "Model download incomplete: expected {} bytes, got {}",
+                content_length, downloaded
+            ));
+        }
+
+        drop(file);
+        std::fs::rename(&part_path, &final_path)
+            .map_err(|e| format!("Failed to finalize model file: {}", e))?;
+    }
+
+    Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn delete_translation_model() -> Result<(), String> {
+    let dir = nllb_model_dir();
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 #[cfg(feature = "whisper")]
 async fn transcribe_audio_local(
@@ -703,6 +857,10 @@ fn main() {
             delete_whisper_model,
             list_downloaded_models,
             check_model_downloaded,
+            download_nllb_model,
+            is_translation_model_downloaded,
+            get_translation_model_path,
+            delete_translation_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

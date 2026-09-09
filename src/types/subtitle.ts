@@ -12,4 +12,5 @@ export interface SubtitleTrack {
   cues: SubtitleCue[];
   isGenerated?: boolean;
   isTranslated?: boolean;
+  sourceTrackId?: string;
 }

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { TauriService, isTauri } from "../services/tauri";
+import { translationService } from "../services/translation";
 import type { SubtitleTrack } from "../types/subtitle";
 
 const SUBTITLE_LANGUAGES = [
@@ -38,6 +39,12 @@ const SUBTITLE_LANGUAGES = [
   { code: "ar", name: "Arabic" },
 ];
 
+const SOURCE_LANGUAGES = [
+  { code: "auto", name: "Auto-Detect" },
+  { code: "my", name: "Burmese" },
+  { code: "en", name: "English" },
+];
+
 export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [showControls, setShowControls] = useState(true);
@@ -46,8 +53,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [videoSource, setVideoSource] = useState<string | null>(null);
   const [showCCMenu, setShowCCMenu] = useState(false);
-  const [ccMenuView, setCcMenuView] = useState<"root" | "language" | "mode">("root");
+  const [ccMenuView, setCcMenuView] = useState<"root" | "source" | "language" | "mode">("root");
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [isTranslating, setIsTranslating] = useState(false);
   const {
     currentVideoUrl,
     currentVideoPath,
@@ -66,12 +74,18 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     subtitleStyle,
     targetLanguage,
     setTargetLanguage,
+    sourceLanguage,
+    setSourceLanguage,
     isTranscribing,
     setIsTranscribing,
+    translationError,
+    setTranslationError,
   } = useAppStore();
 
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPlayRef = useRef(false);
+  const translateGenerationRef = useRef(0);
+  const autoPausedForTranscriptionRef = useRef(false);
 
   const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
   const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
@@ -261,24 +275,27 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       return;
     }
     setTranscriptionError(null);
-    const langToUse =
-      s.targetLanguage === "auto" || s.targetLanguage === "original"
+    // Force Whisper to recognize in the explicitly selected spoken language; auto-detection otherwise.
+    // The translation target is handled separately by the offline NLLB model, so the whisper
+    // translate-to-English mode is intentionally not enabled here.
+    const sourceLangToUse =
+      s.sourceLanguage === "auto" || s.sourceLanguage === "original"
         ? undefined
-        : s.targetLanguage;
+        : s.sourceLanguage;
     setIsTranscribing(true);
     try {
       const cues = await TauriService.processDroppedVideo(
         videoPath,
         s.whisperModel,
-        undefined,
-        langToUse
+        sourceLangToUse
       );
       // Stale transcription guard: ignore results if the user switched videos mid-run
       if (useAppStore.getState().currentVideoPath !== videoPath) {
         return;
       }
-      const selectedLang = SUBTITLE_LANGUAGES.find((l) => l.code === s.targetLanguage);
-      const label = !langToUse ? "Original" : selectedLang?.name || s.targetLanguage;
+      const label = !sourceLangToUse
+        ? "Original"
+        : SOURCE_LANGUAGES.find((l) => l.code === sourceLangToUse)?.name || sourceLangToUse;
       const newTrack: SubtitleTrack = {
         id: `track-${Date.now()}`,
         name: `Auto-Generated (${label})`,
@@ -286,8 +303,12 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         cues,
         isGenerated: true,
       };
-      useAppStore.getState().setSubtitleTracks([...useAppStore.getState().subtitleTracks, newTrack]);
+      const withoutTranslated = useAppStore.getState().subtitleTracks.filter(
+        (t) => !t.isTranslated
+      );
+      useAppStore.getState().setSubtitleTracks([...withoutTranslated, newTrack]);
       useAppStore.getState().setActiveSubtitleTrackId(newTrack.id);
+      useAppStore.getState().setActiveTranslatedTrackId(null);
       useAppStore.getState().setShowSubtitles(true);
     } catch (err) {
       if (useAppStore.getState().currentVideoPath === videoPath) {
@@ -304,10 +325,99 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   const transcribeVideoRef = useRef<(videoPath?: string) => Promise<void>>(async () => {});
   transcribeVideoRef.current = transcribeVideo;
 
+  // Translate the active subtitle track into the given language using the local NLLB-200 model
+  const translateSubtitles = async (code: string) => {
+    const s = useAppStore.getState();
+    const generation = ++translateGenerationRef.current;
+
+    setTranslationError(null);
+
+    if (code === "auto" || code === "original") {
+      const withoutTranslated = s.subtitleTracks.filter((t) => !t.isTranslated);
+      s.setSubtitleTracks(withoutTranslated);
+      s.setActiveTranslatedTrackId(null);
+      s.setSubtitleDisplayMode("original");
+      return;
+    }
+
+    const original = s.subtitleTracks.find((t) => t.id === s.activeSubtitleTrackId);
+    if (!original || original.cues.length === 0) {
+      return;
+    }
+
+    if (!s.translationModelAvailable) {
+      setTranslationError(
+        "Translation model not installed. Open Settings → Translation Model to download it."
+      );
+      return;
+    }
+
+    setIsTranslating(true);
+    try {
+      const texts = original.cues.map((c) => c.text);
+      const result = await translationService.translate(texts, "auto", code);
+      if (translateGenerationRef.current !== generation) return;
+
+      const langName = SUBTITLE_LANGUAGES.find((l) => l.code === code)?.name || code;
+      const translatedTrack: SubtitleTrack = {
+        id: `track-translated-${Date.now()}`,
+        name: `Translated (${langName})`,
+        language: langName,
+        cues: original.cues.map((cue, i) => ({ ...cue, text: result[i] ?? cue.text })),
+        isTranslated: true,
+        sourceTrackId: original.id,
+      };
+
+      const current = useAppStore.getState();
+      const withoutTranslated = current.subtitleTracks.filter((t) => !t.isTranslated);
+      current.setSubtitleTracks([...withoutTranslated, translatedTrack]);
+      current.setActiveTranslatedTrackId(translatedTrack.id);
+      current.setSubtitleDisplayMode("translated");
+      current.setShowSubtitles(true);
+    } catch (err) {
+      if (translateGenerationRef.current !== generation) return;
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("Translation error:", err);
+      setTranslationError(message);
+      setSubtitleDisplayMode("original");
+      setShowSubtitles(false);
+    } finally {
+      if (translateGenerationRef.current === generation) {
+        setIsTranslating(false);
+      }
+    }
+  };
+
+  // Cancel any in-flight translation when the player unmounts
+  useEffect(() => {
+    return () => {
+      translateGenerationRef.current += 1;
+    };
+  }, []);
+
   const currentLanguageLabel =
     SUBTITLE_LANGUAGES.find((l) => l.code === targetLanguage)?.name ||
     targetLanguage ||
     "Original";
+
+  const currentSourceLanguageLabel =
+    SOURCE_LANGUAGES.find((l) => l.code === sourceLanguage)?.name || sourceLanguage || "Auto-Detect";
+
+  // Pause playback while the *initial* transcription for a new video is running, then auto-resume
+  const isInitialTranscribing = isTranscribing && subtitleTracks.length === 0;
+  useEffect(() => {
+    if (isInitialTranscribing) {
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+        autoPausedForTranscriptionRef.current = true;
+      }
+    } else if (!isTranscribing && autoPausedForTranscriptionRef.current && subtitleTracks.length > 0) {
+      autoPausedForTranscriptionRef.current = false;
+      if (videoRef.current && videoRef.current.paused) {
+        videoRef.current.play().catch(() => setIsPlaying(false));
+      }
+    }
+  }, [isInitialTranscribing, isTranscribing, subtitleTracks.length, setIsPlaying]);
 
   const handleToggleSubtitles = () => {
     const turningOn = !showSubtitles;
@@ -470,6 +580,15 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
             </div>
           )}
 
+          {/* Initial Transcription Overlay */}
+          {isInitialTranscribing && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/60 backdrop-blur-sm pointer-events-none">
+              <Loader2 className="w-10 h-10 animate-spin text-zan-cyan" />
+              <p className="text-white text-lg font-semibold">Transcribing Audio...</p>
+              <p className="text-gray-300 text-sm">Please wait</p>
+            </div>
+          )}
+
           {/* Play/Pause Overlay */}
           <div
             className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"
@@ -576,7 +695,39 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                   
                   {showCCMenu && (
                     <div className="absolute bottom-full right-0 mb-3 bg-zan-black/95 backdrop-blur rounded-xl shadow-2xl border border-gray-700 min-w-[220px] overflow-hidden">
-                      {ccMenuView === "language" ? (
+                      {ccMenuView === "source" ? (
+                        <>
+                          <div className="flex items-center px-2 py-2 border-b border-gray-700">
+                            <button
+                              onClick={() => setCcMenuView("root")}
+                              className="p-1.5 text-gray-400 hover:text-white hover:bg-zan-blue/15 rounded-lg transition-colors"
+                            >
+                              <ChevronLeft className="w-4 h-4" />
+                            </button>
+                            <span className="text-sm font-semibold text-white px-2">Spoken Audio (Source)</span>
+                          </div>
+                          <div className="max-h-64 overflow-y-auto p-1">
+                            {SOURCE_LANGUAGES.map((lang) => (
+                              <button
+                                key={lang.code}
+                                onClick={() => {
+                                  setSourceLanguage(lang.code);
+                                  setCcMenuView("root");
+                                }}
+                                className={cn(
+                                  "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-lg transition-colors",
+                                  sourceLanguage === lang.code
+                                    ? "text-zan-cyan bg-zan-blue/25"
+                                    : "text-gray-300 hover:bg-zan-blue/15"
+                                )}
+                              >
+                                {lang.name}
+                                {sourceLanguage === lang.code && <CheckCircle2 className="w-4 h-4" />}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      ) : ccMenuView === "language" ? (
                         <>
                           <div className="flex items-center px-2 py-2 border-b border-gray-700">
                             <button
@@ -595,6 +746,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                                   setTargetLanguage(lang.code);
                                   if (lang.code !== "auto" && subtitleTracks.length === 0 && !isTranscribing) {
                                     transcribeVideoRef.current();
+                                  }
+                                  if (subtitleTracks.length > 0) {
+                                    void translateSubtitles(lang.code);
                                   }
                                   setCcMenuView("root");
                                 }}
@@ -659,6 +813,12 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                                 Transcribing
                               </span>
                             )}
+                            {isTranslating && (
+                              <span className="flex items-center gap-1.5 text-xs text-zan-cyan">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                Translating
+                              </span>
+                            )}
                           </div>
                           <div className="p-1">
                             <button
@@ -678,6 +838,16 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                                     showSubtitles ? "left-[18px]" : "left-0.5"
                                   )}
                                 />
+                              </span>
+                            </button>
+                            <button
+                              onClick={() => setCcMenuView("source")}
+                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-zan-blue/15 rounded-lg transition-colors"
+                            >
+                              <span>Spoken Audio (Source)</span>
+                              <span className="flex items-center gap-1 text-gray-400">
+                                <span className="text-xs">{currentSourceLanguageLabel}</span>
+                                <ChevronRight className="w-4 h-4" />
                               </span>
                             </button>
                             <button
@@ -712,6 +882,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                             </button>
                             {transcriptionError && (
                               <p className="px-3 py-2 text-xs text-red-400 break-all">{transcriptionError}</p>
+                            )}
+                            {translationError && (
+                              <p className="px-3 py-2 text-xs text-red-400 break-all">{translationError}</p>
                             )}
                           </div>
                         </>

@@ -3,6 +3,7 @@ import { Languages, Settings as SettingsIcon, CheckCircle2, Info, Download, Tras
 import { useEffect, useState } from "react";
 import { isTauri } from "../services/tauri";
 import { check } from "@tauri-apps/plugin-updater";
+import { translationService } from "../services/translation";
 
 interface WhisperModel {
   id: string;
@@ -125,16 +126,50 @@ export const SettingsComponent = () => {
     loadDownloadedModels,
     downloadModel,
     deleteModel,
+    translationModelAvailable,
+    setTranslationModelAvailable,
+    translationModelLoading,
+    translationError,
   } = useAppStore();
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [translationProgress, setTranslationProgress] = useState<number | null>(null);
+  const [translationPhase, setTranslationPhase] = useState<"downloading" | "preparing" | null>(null);
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'not_available' | 'installing'>('idle');
   const [updateInfo, setUpdateInfo] = useState<any>(null);
   console.log("isTauri():", isTauri());
 
   useEffect(() => {
     loadDownloadedModels();
-  }, [loadDownloadedModels]);
+    translationService.isModelAvailable().then((available) => {
+      setTranslationModelAvailable(available);
+    });
+  }, [loadDownloadedModels, setTranslationModelAvailable]);
+
+  const handleDownloadTranslationModel = async () => {
+    setTranslationProgress(0);
+    setTranslationPhase("downloading");
+    try {
+      await translationService.loadModel((percent, phase) => {
+        setTranslationProgress(percent);
+        setTranslationPhase(phase);
+      });
+    } catch (err) {
+      console.error("Failed to set up translation model:", err);
+    } finally {
+      setTranslationPhase(null);
+    }
+  };
+
+  const handleRemoveTranslationModel = async () => {
+    setTranslationProgress(null);
+    setTranslationPhase(null);
+    try {
+      await translationService.deleteModel();
+    } catch (err) {
+      console.error("Failed to remove translation model:", err);
+    }
+  };
 
   const checkForUpdates = async () => {
     if (!isTauri()) return;
@@ -512,26 +547,104 @@ export const SettingsComponent = () => {
               <span className="px-1.5 py-0.5 bg-zan-cyan/15 text-zan-cyan text-[10px] font-semibold rounded-full">
                 Offline
               </span>
+              {translationModelAvailable && (
+                <span className="px-1.5 py-0.5 bg-green-500/10 text-green-400 text-[10px] font-semibold rounded-full">
+                  Ready
+                </span>
+              )}
             </div>
             <span className={`text-xs font-medium ${labelClass(theme)} whitespace-nowrap shrink-0`}>
-              ~600MB
+              ~900MB
             </span>
           </div>
           <p className={`text-[11px] ${labelClass(theme)}`}>
-            Translate subtitles between 200+ languages directly inside ZanPlayer using a local NLLB-200 model.
+            Translate subtitles between 200+ languages directly inside ZanPlayer using a local int8
+            NLLB-200 model. Downloads once and runs fully offline.
           </p>
-          <div className="mt-4 flex items-center justify-between gap-3">
-            <button
-              onClick={() => console.log("Download NLLB")}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-xs font-medium transition-all"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Download
-            </button>
-            <span className={`text-[10px] ${labelClass(theme)}`}>
-              Translation engine coming soon
-            </span>
-          </div>
+
+          {translationModelAvailable ? (
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <span className="flex items-center gap-1.5 text-[11px] text-green-400">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Translation engine ready
+              </span>
+              <button
+                onClick={handleRemoveTranslationModel}
+                disabled={translationModelLoading}
+                className={`p-2 rounded-lg ${
+                  theme === 'dark'
+                    ? 'text-gray-400 hover:text-red-400 hover:bg-red-500/20'
+                    : 'text-gray-500 hover:text-red-500 hover:bg-red-50'
+                }`}
+                title="Remove downloaded translation model"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="mt-4">
+              <div className="flex items-center justify-between gap-3">
+                <button
+                  onClick={handleDownloadTranslationModel}
+                  disabled={translationModelLoading || !isTauri()}
+                  className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    !isTauri()
+                      ? "bg-gray-400 cursor-not-allowed"
+                      : translationModelLoading
+                        ? "bg-gray-600 cursor-not-allowed"
+                        : "bg-zan-blue hover:bg-zan-deep text-white"
+                  }`}
+                >
+                  {translationModelLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  {translationModelLoading
+                    ? translationPhase === "downloading"
+                      ? "Downloading..."
+                      : "Preparing..."
+                    : "Download"}
+                </button>
+                <span className={`text-[10px] ${labelClass(theme)}`}>
+                  One-time download, no internet after install
+                </span>
+              </div>
+
+              {translationProgress !== null && translationModelLoading && (
+                <div className="mt-2 space-y-1">
+                  <div className={`h-1 rounded-full overflow-hidden ${trackClass(theme)}`}>
+                    <div
+                      className="h-full bg-zan-cyan transition-all duration-300"
+                      style={{ width: `${Math.min(100, Math.max(0, translationProgress))}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className={labelClass(theme)}>
+                      {translationPhase === "downloading"
+                        ? `Downloading model ${Math.min(100, Math.max(0, translationProgress)).toFixed(1)}%`
+                        : `Preparing local files ${Math.min(100, Math.max(0, translationProgress)).toFixed(1)}%`}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {translationError && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-[10px] text-red-400 max-w-[16rem] truncate" title={translationError}>
+                    {translationError}
+                  </span>
+                  <button
+                    onClick={handleDownloadTranslationModel}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-medium border transition-all text-gray-300 hover:bg-gray-700/60"
+                  >
+                    <RefreshCw className="w-3 h-3 text-red-400" />
+                    Retry
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </section>
 
