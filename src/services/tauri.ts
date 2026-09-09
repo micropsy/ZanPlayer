@@ -225,4 +225,11 @@ export class TauriService {
     }
     return convertFileSrc(filePath);
   }
+
+  static async relaunchApp(): Promise<void> {
+    if (!isTauri()) {
+      throw new Error("This feature requires the Tauri app");
+    }
+    await invoke<void>("relaunch_app");
+  }
 }

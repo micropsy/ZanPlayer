@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "dialog:default",
+    "dialog:allow-ask",
     "fs:default",
     "fs:allow-app-read-recursive",
     "fs:allow-app-write-recursive",

@@ -1,8 +1,9 @@
 import { useAppStore } from "../services/store";
 import { Languages, Settings as SettingsIcon, CheckCircle2, Info, Download, Trash2, Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { isTauri } from "../services/tauri";
+import { isTauri, TauriService } from "../services/tauri";
 import { check } from "@tauri-apps/plugin-updater";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import { translationService } from "../services/translation";
 
 interface WhisperModel {
@@ -137,9 +138,7 @@ export const SettingsComponent = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [translationProgress, setTranslationProgress] = useState<number | null>(null);
   const [translationPhase, setTranslationPhase] = useState<"downloading" | "preparing" | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'not_available' | 'installing'>('idle');
-  const [updateInfo, setUpdateInfo] = useState<any>(null);
-  console.log("isTauri():", isTauri());
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
   useEffect(() => {
     loadDownloadedModels();
@@ -173,32 +172,40 @@ export const SettingsComponent = () => {
     }
   };
 
-  const checkForUpdates = async () => {
+  const handleCheckUpdate = async () => {
     if (!isTauri()) return;
-    setUpdateStatus('checking');
+    setIsCheckingUpdate(true);
     try {
       const update = await check();
       if (update) {
-        setUpdateStatus('available');
-        setUpdateInfo(update);
+        const installNow = await ask(
+          `Version ${update.version} is available. Do you want to download and install it?`,
+          {
+            title: "Update Available",
+            kind: "info",
+            okLabel: "Download & Install",
+            cancelLabel: "Later",
+          }
+        );
+        if (installNow) {
+          await update.downloadAndInstall();
+          await TauriService.relaunchApp();
+        }
       } else {
-        setUpdateStatus('not_available');
+        await message("ZanPlayer is up to date.", {
+          title: "No Updates",
+          kind: "info",
+        });
       }
     } catch (error) {
       console.error("Update check failed:", error);
-      setUpdateStatus('idle');
-    }
-  };
-
-  const installUpdate = async () => {
-    if (!updateInfo) return;
-    setUpdateStatus('installing');
-    try {
-      await updateInfo.downloadAndInstall();
-      // Application will restart automatically after install
-    } catch (error) {
-      console.error("Update installation failed:", error);
-      setUpdateStatus('idle');
+      const detail = error instanceof Error ? error.message : String(error);
+      await message(`Update check failed: ${detail}`, {
+        title: "Update Error",
+        kind: "error",
+      }).catch(() => {});
+    } finally {
+      if (isTauri()) setIsCheckingUpdate(false);
     }
   };
 
@@ -236,52 +243,18 @@ export const SettingsComponent = () => {
           Updates
         </label>
         {isTauri() ? (
-          <>
-            {updateStatus === 'idle' && (
-              <button
-                onClick={checkForUpdates}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all"
-              >
-                <RefreshCw className="w-4 h-4" />
-                Check for Updates
-              </button>
+          <button
+            onClick={handleCheckUpdate}
+            disabled={isCheckingUpdate}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {isCheckingUpdate ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4" />
             )}
-
-            {updateStatus === 'checking' && (
-              <div className="flex items-center justify-center gap-2 py-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>Checking...</span>
-              </div>
-            )}
-
-            {updateStatus === 'not_available' && (
-              <div className="flex items-center justify-center gap-2 py-2">
-                <CheckCircle2 className="w-4 h-4 text-green-400" />
-                <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>You're up to date!</span>
-              </div>
-            )}
-
-            {updateStatus === 'available' && (
-              <div className="flex items-center justify-between gap-3 py-1">
-                <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
-                  New version available!
-                </span>
-                <button
-                  onClick={installUpdate}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm transition-all"
-                >
-                  Install Update
-                </button>
-              </div>
-            )}
-
-            {updateStatus === 'installing' && (
-              <div className="flex items-center justify-center gap-2 py-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>Installing...</span>
-              </div>
-            )}
-          </>
+            {isCheckingUpdate ? "Checking..." : "Check for Updates"}
+          </button>
         ) : (
           <p className={`text-xs ${labelClass(theme)}`}>
             Update feature is only available in the desktop app.

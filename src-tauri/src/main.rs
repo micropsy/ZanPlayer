@@ -417,7 +417,6 @@ async fn transcribe_audio_local(
     target_language: Option<String>,
 ) -> Result<Vec<SubtitleCue>, String> {
     let app_dir = get_app_dir();
-    let progress_app = app.clone();
     let models_dir = app_dir.join("models");
     let model_path = models_dir.join(model_filename(&model_name));
 
@@ -449,25 +448,51 @@ async fn transcribe_audio_local(
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    // Real chunk-based progress: whisper.cpp invokes this once per processed audio
-    // window with the percent completed, which we forward to the frontend overlay.
-    params.set_progress_callback_safe(move |percent: i32| {
-        let _ = progress_app.emit(
+
+    // The callbacks below are attached LAST, immediately before `state.full(...)`.
+    // Once attached, `params` must NOT be moved/reassigned: whisper.cpp copies the
+    // callback `user_data` raw pointers out of this struct, so every closure they
+    // reference must live in a stable (heap) location for the duration of decoding.
+
+    // Progress callback. NOTE: whisper-rs 0.12's `set_progress_callback_safe` stores
+    // a pointer to a *stack local* closure and then moves that closure into a heap Box,
+    // leaving the registered `user_data` pointer dangling once the setter returns. When
+    // whisper.cpp fires the trampoline during `whisper_full_with_state`, the callback
+    // reads garbage stack memory and crashes (EXC_ARM_DA_ALIGN / pointer-auth failure on
+    // Apple Silicon). We therefore register the C callback manually with a leaked heap
+    // Box whose address stays valid for the whole process, mirroring how whisper-rs's
+    // own `set_segment_callback_safe` keeps its closure alive via `Box::into_raw`.
+    let app_progress = app.clone();
+    let progress_closure: Box<dyn FnMut(i32) + Send + 'static> = Box::new(move |percent: i32| {
+        let _ = app_progress.emit(
             "transcription-progress",
             TranscriptionProgress {
                 percentage: f64::from(percent.clamp(0, 100)),
             },
         );
     });
+    let progress_user_data = Box::into_raw(progress_closure) as *mut std::ffi::c_void;
+
+    unsafe extern "C" fn progress_trampoline(
+        _ctx: *mut whisper_rs::WhisperSysContext,
+        _state: *mut whisper_rs::WhisperSysState,
+        progress: std::os::raw::c_int,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        let closure: &mut Box<dyn FnMut(i32) + Send + 'static> =
+            &mut *(user_data as *mut _);
+        closure(progress);
+    }
+
     // Streaming: whisper.cpp invokes this as each decoded segment is finalized
     // DURING decoding, so the frontend can append cues and unblock playback
     // without waiting for the full transcription to finish.
-    let chunk_app = app.clone();
+    let app_segment = app.clone();
     params.set_segment_callback_safe(move |seg: SegmentCallbackData| {
         if seg.text.trim().is_empty() {
             return;
         }
-        let _ = chunk_app.emit(
+        let _ = app_segment.emit(
             "transcription-chunk",
             TranscriptionChunk {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -477,6 +502,13 @@ async fn transcribe_audio_local(
             },
         );
     });
+
+    // Attach the progress callback right before running the model, never later
+    // (the struct must not be reallotted once these raw pointers are in place).
+    unsafe {
+        params.set_progress_callback(Some(progress_trampoline));
+        params.set_progress_callback_user_data(progress_user_data);
+    }
 
     let mut state = ctx.create_state().map_err(|e| e.to_string())?;
     state.full(params, &samples_f32).map_err(|e| e.to_string())?;
@@ -896,12 +928,18 @@ async fn process_dropped_video(
     result
 }
 
+#[tauri::command]
+fn relaunch_app(app: AppHandle) {
+    tauri::process::restart(&app.env());
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             open_video_dialog,
             open_subtitle_dialog,
@@ -920,6 +958,7 @@ fn main() {
             is_translation_model_downloaded,
             get_translation_model_path,
             delete_translation_model,
+            relaunch_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
