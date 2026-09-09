@@ -4,10 +4,10 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use directories_next::ProjectDirs;
 #[cfg(feature = "whisper")]
-use whisper_rs::{WhisperContext, FullParams, SamplingStrategy, WhisperContextParameters};
+use whisper_rs::{WhisperContext, FullParams, SamplingStrategy, WhisperContextParameters, SegmentCallbackData};
 #[cfg(feature = "whisper")]
 use hound;
 use tauri_plugin_dialog::DialogExt;
@@ -256,31 +256,55 @@ struct NllbProgressPayload {
     file_done: u64,
 }
 
-fn nllb_model_dir() -> PathBuf {
-    get_app_dir().join("nllb-200")
+#[derive(Clone, serde::Serialize)]
+struct TranscriptionProgress {
+    percentage: f64,
 }
 
-fn nllb_model_ready() -> bool {
-    let dir = nllb_model_dir();
+#[derive(Clone, serde::Serialize)]
+struct TranscriptionChunk {
+    id: String,
+    #[serde(rename = "start_time")]
+    start_time: f64,
+    #[serde(rename = "end_time")]
+    end_time: f64,
+    text: String,
+}
+
+// NLLB model lives in Tauri's *scoped* app data dir so that the frontend's
+// plugin-fs `readFile` (used to warm the translation Cache API) is allowed.
+// Resolving with `app.path()` keeps this in sync with the `$APPDATA`/`$APPLOCALDATA`
+// scope that `fs:default` + `fs:allow-app-*-recursive` grant to the webview.
+fn nllb_model_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    Ok(base.join("nllb-200"))
+}
+
+fn nllb_model_ready(dir: &Path) -> bool {
     NLLB_FILES.iter().all(|(rel, _)| dir.join(rel).exists())
 }
 
 #[tauri::command]
-async fn is_translation_model_downloaded() -> Result<bool, String> {
-    Ok(nllb_model_ready())
+async fn is_translation_model_downloaded(app: AppHandle) -> Result<bool, String> {
+    let dir = nllb_model_dir(&app)?;
+    Ok(nllb_model_ready(&dir))
 }
 
 #[tauri::command]
-async fn get_translation_model_path() -> Result<String, String> {
-    Ok(nllb_model_dir().to_string_lossy().to_string())
+async fn get_translation_model_path(app: AppHandle) -> Result<String, String> {
+    let dir = nllb_model_dir(&app)?;
+    Ok(dir.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 async fn download_nllb_model(app: AppHandle) -> Result<String, String> {
-    let dir = nllb_model_dir();
+    let dir = nllb_model_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    if nllb_model_ready() {
+    if nllb_model_ready(&dir) {
         return Ok(dir.to_string_lossy().to_string());
     }
 
@@ -375,8 +399,8 @@ async fn download_nllb_model(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn delete_translation_model() -> Result<(), String> {
-    let dir = nllb_model_dir();
+async fn delete_translation_model(app: AppHandle) -> Result<(), String> {
+    let dir = nllb_model_dir(&app)?;
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
@@ -393,11 +417,12 @@ async fn transcribe_audio_local(
     target_language: Option<String>,
 ) -> Result<Vec<SubtitleCue>, String> {
     let app_dir = get_app_dir();
+    let progress_app = app.clone();
     let models_dir = app_dir.join("models");
     let model_path = models_dir.join(model_filename(&model_name));
 
     if !model_path.exists() {
-        download_whisper_model(app, model_name).await?;
+        download_whisper_model(app.clone(), model_name).await?;
     }
 
     let params = WhisperContextParameters::default();
@@ -424,9 +449,43 @@ async fn transcribe_audio_local(
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
+    // Real chunk-based progress: whisper.cpp invokes this once per processed audio
+    // window with the percent completed, which we forward to the frontend overlay.
+    params.set_progress_callback_safe(move |percent: i32| {
+        let _ = progress_app.emit(
+            "transcription-progress",
+            TranscriptionProgress {
+                percentage: f64::from(percent.clamp(0, 100)),
+            },
+        );
+    });
+    // Streaming: whisper.cpp invokes this as each decoded segment is finalized
+    // DURING decoding, so the frontend can append cues and unblock playback
+    // without waiting for the full transcription to finish.
+    let chunk_app = app.clone();
+    params.set_segment_callback_safe(move |seg: SegmentCallbackData| {
+        if seg.text.trim().is_empty() {
+            return;
+        }
+        let _ = chunk_app.emit(
+            "transcription-chunk",
+            TranscriptionChunk {
+                id: uuid::Uuid::new_v4().to_string(),
+                start_time: seg.start_timestamp as f64 / 100.0,
+                end_time: seg.end_timestamp as f64 / 100.0,
+                text: seg.text,
+            },
+        );
+    });
 
     let mut state = ctx.create_state().map_err(|e| e.to_string())?;
     state.full(params, &samples_f32).map_err(|e| e.to_string())?;
+
+    // Guarantee the overlay snaps to completion once decoding finishes.
+    let _ = app.emit(
+        "transcription-progress",
+        TranscriptionProgress { percentage: 100.0 },
+    );
 
     let num_segments = state.full_n_segments().map_err(|e| e.to_string())?;
     let mut cues = Vec::new();

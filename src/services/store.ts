@@ -27,6 +27,8 @@ interface AppState {
     subtitleTracks: SubtitleTrack[];
     setSubtitleTracks: (tracks: SubtitleTrack[]) => void;
     resetSubtitles: () => void;
+    appendStreamedCues: (trackId: string, meta: { name: string; language: string }, cues: SubtitleCue[]) => void;
+    setTrackCues: (trackId: string, cues: SubtitleCue[]) => void;
     activeSubtitleTrackId: string | null;
     setActiveSubtitleTrackId: (id: string | null) => void;
     activeTranslatedTrackId: string | null;
@@ -67,6 +69,10 @@ interface AppState {
     setSourceLanguage: (lang: string) => void;
     isTranscribing: boolean;
     setIsTranscribing: (val: boolean) => void;
+    transcriptionProgress: number;
+    setTranscriptionProgress: (progress: number) => void;
+    transcriptionMode: "realtime" | "full";
+    setTranscriptionMode: (mode: "realtime" | "full") => void;
 
     // Offline translation
     translationModelAvailable: boolean;
@@ -113,7 +119,36 @@ export const useAppStore = create<AppState>()(
                     activeSubtitleTrackId: null,
                     activeTranslatedTrackId: null,
                     isTranscribing: false,
+                    transcriptionProgress: 0,
                 }),
+            appendStreamedCues: (trackId, meta, cues) =>
+                set((state) => {
+                    const exists = state.subtitleTracks.some((t) => t.id === trackId);
+                    const tracks = exists
+                        ? state.subtitleTracks
+                        : [
+                              ...state.subtitleTracks.filter((t) => !t.isGenerated),
+                              {
+                                  id: trackId,
+                                  name: meta.name,
+                                  language: meta.language,
+                                  cues: [],
+                                  isGenerated: true,
+                              },
+                          ];
+                    return {
+                        subtitleTracks: tracks.map((t) =>
+                            t.id === trackId ? { ...t, cues: [...t.cues, ...cues] } : t
+                        ),
+                        ...(exists ? {} : { activeSubtitleTrackId: trackId }),
+                    };
+                }),
+            setTrackCues: (trackId, cues) =>
+                set((state) => ({
+                    subtitleTracks: state.subtitleTracks.map((t) =>
+                        t.id === trackId ? { ...t, cues } : t
+                    ),
+                })),
             activeSubtitleTrackId: null,
             setActiveSubtitleTrackId: (id: string | null) => set({ activeSubtitleTrackId: id }),
             activeTranslatedTrackId: null,
@@ -207,6 +242,10 @@ export const useAppStore = create<AppState>()(
             setSourceLanguage: (lang: string) => set({ sourceLanguage: lang }),
             isTranscribing: false,
             setIsTranscribing: (val: boolean) => set({ isTranscribing: val }),
+            transcriptionProgress: 0,
+            setTranscriptionProgress: (progress: number) => set({ transcriptionProgress: progress }),
+            transcriptionMode: "realtime" as const,
+            setTranscriptionMode: (mode: "realtime" | "full") => set({ transcriptionMode: mode }),
 
             // Offline translation
             translationModelAvailable: false,
@@ -326,6 +365,7 @@ export const useAppStore = create<AppState>()(
                 subtitleStyle: state.subtitleStyle,
                 targetLanguage: state.targetLanguage,
                 sourceLanguage: state.sourceLanguage,
+                transcriptionMode: state.transcriptionMode,
             }),
         }
     )

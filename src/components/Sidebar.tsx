@@ -12,6 +12,7 @@ import {
   FileVideo,
   Menu,
 } from "lucide-react";
+import { emit } from "@tauri-apps/api/event";
 import { TauriService } from "../services/tauri";
 import { SettingsComponent } from "./Settings";
 import { cn } from "../utils/cn";
@@ -182,7 +183,13 @@ export const Sidebar = () => {
     }
   };
 
-  const isTauriApp = typeof window !== "undefined" && (window as any).__TAURI__ !== undefined;
+  // Tauri v2 injects __TAURI_INTERNALS__ even without withGlobalTauri, so check for
+  // either global. Without this, "Select Video" falls back to the browser file input,
+  // which can never produce a filesystem path and therefore never auto-transcribes.
+  const isTauriApp =
+    typeof window !== "undefined" &&
+    ((window as any).__TAURI_INTERNALS__ !== undefined ||
+      (window as any).__TAURI__ !== undefined);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const subtitleFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -195,10 +202,16 @@ export const Sidebar = () => {
     try {
       const videoFile = await TauriService.openVideoDialog();
       if (videoFile) {
+        // Mirror the drag-and-drop logic (App.tsx handleDroppedFiles) exactly:
+        // reset subtitles, clear the File object, set the asset URL, set the real
+        // filesystem path (so VideoPlayer's auto-transcribe effect fires), and emit
+        // the video-dropped event for autoplay parity.
         resetSubtitles();
-        setCurrentVideoPath(videoFile.path);
-        const url = `file://${encodeURIComponent(videoFile.path)}`;
+        setCurrentVideo(null);
+        const url = await TauriService.getVideoBlobUrl(videoFile.path);
         setCurrentVideoUrl(url);
+        setCurrentVideoPath(videoFile.path);
+        emit("zanplayer:video-dropped");
       }
     } catch (error) {
       setErrorMessage(`Error selecting video: ${(error as Error).message}`);

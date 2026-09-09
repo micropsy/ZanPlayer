@@ -70,6 +70,7 @@ interface InitPayload {
   modelId: string;
   cacheHost: string;
   cacheTemplate: string;
+  localModelPath?: string;
 }
 
 interface TranslatePayload {
@@ -106,8 +107,18 @@ async function ensureTranslator(
       env.remoteHost = payload.cacheHost;
       env.remotePathTemplate = payload.cacheTemplate;
       env.useBrowserCache = true;
-      env.allowLocalModels = true;
-      env.allowRemoteModels = true;
+      if (payload.localModelPath) {
+        // Offline-only: load every model file from local disk via the injected
+        // asset URL (convertFileSrc of the app-data dir). Never hit the network,
+        // which otherwise falls back to a HTML 404 page and crashes .json() parsing.
+        env.allowRemoteModels = false;
+        env.allowLocalModels = true;
+        env.localModelPath = payload.localModelPath;
+      } else {
+        // No asset URL injected (non-Tauri dev fallback): keep remote loading.
+        env.allowLocalModels = true;
+        env.allowRemoteModels = true;
+      }
       translator = (await pipeline("translation", payload.modelId, {
         quantized: true,
       })) as unknown as Translator;
@@ -118,9 +129,9 @@ async function ensureTranslator(
 
 const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> = {
   init: async (id, payload) => {
-    const { cacheHost, cacheTemplate, modelId } = payload as InitPayload;
+    const { cacheHost, cacheTemplate, modelId, localModelPath } = payload as InitPayload;
     try {
-      await ensureTranslator({ modelId, cacheHost, cacheTemplate });
+      await ensureTranslator({ modelId, cacheHost, cacheTemplate, localModelPath });
       post({ type: "ready", id });
     } catch (err) {
       post({ type: "error", id, message: errToString(err) });

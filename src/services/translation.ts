@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { join } from "@tauri-apps/api/path";
+import { dirname, join } from "@tauri-apps/api/path";
 import { isTauri } from "./tauri";
 import { useAppStore } from "./store";
 import {
@@ -199,10 +199,21 @@ class TranslationService {
   async ensureReady(): Promise<void> {
     if (!this.readyPromise) {
       this.readyPromise = (async () => {
+        // Worker threads cannot call Tauri APIs, so resolve the downloaded model
+        // directory to a webview-accessible asset URL here and inject it into the
+        // worker. Transformers.js then loads every file from local disk via the
+        // asset protocol, never from a remote server.
+        let localModelPath: string | undefined;
+        if (isTauri()) {
+          const modelDir = await this.getModelPath();
+          const appDataDir = await dirname(modelDir);
+          localModelPath = convertFileSrc(appDataDir);
+        }
         const response = await this.request("init", {
           modelId: NLLB_MODEL_ID,
           cacheHost: NLLB_CACHE_HOST,
           cacheTemplate: NLLB_CACHE_TEMPLATE,
+          localModelPath,
         });
         if (response.type !== "ready") {
           throw new Error("Failed to initialize translation model");

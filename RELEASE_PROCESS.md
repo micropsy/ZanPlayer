@@ -7,8 +7,8 @@ Follow it exactly. Do not skip steps. Do not guess versions.
 
 | Bump      | When                                                        | Example    |
 | --------- | ----------------------------------------------------------- | ---------- |
-| `PATCH`   | Bug fixes (e.g. fixing the subtitle state leak)             | `0.1.1 -> 0.1.2` |
-| `MINOR`   | New feature, backwards compatible                           | `0.1.2 -> 0.2.0` |
+| `PATCH`   | Bug fixes (e.g. fixing a translation/download edge case)    | `0.1.3 -> 0.1.4` |
+| `MINOR`   | New feature, backwards compatible                           | `0.1.3 -> 0.2.0` |
 | `MAJOR`   | Breaking change                                             | `0.2.0 -> 1.0.0` |
 
 Only bump the digit that matches the change. Never bump two digits at once.
@@ -27,6 +27,9 @@ Always read the current version from `package.json` first — never guess or har
    - `src-tauri/tauri.conf.json` (`version`)
 
    Tauri requires all of them to match; drift breaks the build and the updater.
+
+   > `public/onnx/` is a generated, gitignored directory (`npm run bundle:wasm`) — local
+   > WASM assets never affect the clean-tree check; CI regenerates them itself.
 
 ## 3. Release (preferred — automated)
 
@@ -74,8 +77,19 @@ npm run release -- patch --dry-run
 1. GitHub Actions (`.github/workflows/build.yml`) triggers on tags matching `v*`.
 2. Confirm a run started in the repo's **Actions** tab and that all matrix jobs pass
    (macOS x64, macOS aarch64, Linux x64, Windows x64).
-3. On a tag push, `tauri-action` creates a GitHub Release `vX.Y.Z` with updater artifacts
+3. Each runner:
+   - Installs frontend deps (`npm ci`) and regenerates the ONNX Runtime WASM assets
+     with `npm run bundle:wasm` (`public/onnx/` is gitignored and never committed),
+   - fetches the platform FFmpeg sidecar,
+   - runs `tauri-action@v0` with `permissions: contents: write` and explicit release
+     metadata (`releaseName`, `releaseBody`, `releaseDraft: false`, `prerelease: false`)
+     so it can create the release.
+4. On a tag push, `tauri-action` creates a GitHub Release `vX.Y.Z` with updater artifacts
    (`.sig` signatures + `latest.json`), so the app's auto-updater offers the new version.
+
+> **Note:** the workflow is configured to create releases *only* on tag pushes matching `v*`
+> (plain pushes to `main` skip release creation). If you need to re-run a failed release,
+> delete/retry the run or push the tag again.
 
 ## AI agent rules (non-negotiable)
 

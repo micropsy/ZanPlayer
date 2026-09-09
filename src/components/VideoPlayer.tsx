@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore, type SubtitleDisplayMode } from "../services/store";
 import {
@@ -19,7 +19,7 @@ import {
 import { cn } from "../utils/cn";
 import { TauriService, isTauri } from "../services/tauri";
 import { translationService } from "../services/translation";
-import type { SubtitleTrack } from "../types/subtitle";
+import type { SubtitleTrack, SubtitleCue } from "../types/subtitle";
 
 const SUBTITLE_LANGUAGES = [
   { code: "auto", name: "Original" },
@@ -56,6 +56,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   const [ccMenuView, setCcMenuView] = useState<"root" | "source" | "language" | "mode">("root");
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
+  const [realtimeStreamingActive, setRealtimeStreamingActive] = useState(false);
   const {
     currentVideoUrl,
     currentVideoPath,
@@ -78,6 +79,8 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     setSourceLanguage,
     isTranscribing,
     setIsTranscribing,
+    transcriptionProgress,
+    setTranscriptionProgress,
     translationError,
     setTranslationError,
   } = useAppStore();
@@ -86,6 +89,15 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   const pendingPlayRef = useRef(false);
   const translateGenerationRef = useRef(0);
   const autoPausedForTranscriptionRef = useRef(false);
+  // Realtime streaming state (only used in "realtime" transcription mode)
+  const streamingTrackIdRef = useRef<string | null>(null);
+  const streamingTrackLabelRef = useRef<string>("Original");
+  const streamingPathRef = useRef<string | null>(null);
+  const realtimeStartedRef = useRef(false);
+  const realtimeStreamingActiveRef = useRef(false);
+  const streamingDoneRef = useRef(false);
+  const pendingChunkCuesRef = useRef<SubtitleCue[]>([]);
+  const startRealtimePlaybackRef = useRef<() => void>(() => {});
 
   const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
   const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
@@ -282,7 +294,21 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       s.sourceLanguage === "auto" || s.sourceLanguage === "original"
         ? undefined
         : s.sourceLanguage;
+    const label = !sourceLangToUse
+      ? "Original"
+      : SOURCE_LANGUAGES.find((l) => l.code === sourceLangToUse)?.name || sourceLangToUse;
+    const mode = useAppStore.getState().transcriptionMode;
     setIsTranscribing(true);
+    setTranscriptionProgress(0);
+    // Reset realtime-streaming state for this video.
+    setRealtimeStreamingActive(false);
+    realtimeStreamingActiveRef.current = false;
+    realtimeStartedRef.current = false;
+    streamingDoneRef.current = false;
+    pendingChunkCuesRef.current = [];
+    streamingPathRef.current = videoPath;
+    streamingTrackLabelRef.current = label;
+    streamingTrackIdRef.current = mode === "realtime" ? `track-${Date.now()}` : null;
     try {
       const cues = await TauriService.processDroppedVideo(
         videoPath,
@@ -293,23 +319,41 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       if (useAppStore.getState().currentVideoPath !== videoPath) {
         return;
       }
-      const label = !sourceLangToUse
-        ? "Original"
-        : SOURCE_LANGUAGES.find((l) => l.code === sourceLangToUse)?.name || sourceLangToUse;
-      const newTrack: SubtitleTrack = {
-        id: `track-${Date.now()}`,
-        name: `Auto-Generated (${label})`,
-        language: label,
-        cues,
-        isGenerated: true,
-      };
-      const withoutTranslated = useAppStore.getState().subtitleTracks.filter(
-        (t) => !t.isTranslated
-      );
-      useAppStore.getState().setSubtitleTracks([...withoutTranslated, newTrack]);
-      useAppStore.getState().setActiveSubtitleTrackId(newTrack.id);
-      useAppStore.getState().setActiveTranslatedTrackId(null);
-      useAppStore.getState().setShowSubtitles(true);
+      if (mode === "realtime" && streamingTrackIdRef.current) {
+        // Realtime: the live streamed track already exists in the store. Stop future
+        // chunk appends and reconcile it with the authoritative, complete cue list.
+        const trackId = streamingTrackIdRef.current;
+        streamingDoneRef.current = true;
+        pendingChunkCuesRef.current = [];
+        const st = useAppStore.getState();
+        const exists = st.subtitleTracks.some((t) => t.id === trackId);
+        if (exists) {
+          st.setTrackCues(trackId, cues);
+        } else {
+          st.setSubtitleTracks([
+            ...st.subtitleTracks.filter((t) => !t.isTranslated),
+            { id: trackId, name: `Auto-Generated (${label})`, language: label, cues, isGenerated: true },
+          ]);
+        }
+        st.setActiveSubtitleTrackId(trackId);
+        st.setShowSubtitles(true);
+      } else {
+        // Full (batch): only publish subtitles after 100% completion.
+        const newTrack: SubtitleTrack = {
+          id: `track-${Date.now()}`,
+          name: `Auto-Generated (${label})`,
+          language: label,
+          cues,
+          isGenerated: true,
+        };
+        const withoutTranslated = useAppStore.getState().subtitleTracks.filter(
+          (t) => !t.isTranslated
+        );
+        useAppStore.getState().setSubtitleTracks([...withoutTranslated, newTrack]);
+        useAppStore.getState().setActiveSubtitleTrackId(newTrack.id);
+        useAppStore.getState().setActiveTranslatedTrackId(null);
+        useAppStore.getState().setShowSubtitles(true);
+      }
     } catch (err) {
       if (useAppStore.getState().currentVideoPath === videoPath) {
         console.error("Auto-transcription error:", err);
@@ -318,12 +362,32 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     } finally {
       if (useAppStore.getState().currentVideoPath === videoPath) {
         useAppStore.getState().setIsTranscribing(false);
+        streamingTrackIdRef.current = null;
+        realtimeStreamingActiveRef.current = false;
       }
     }
   };
 
   const transcribeVideoRef = useRef<(videoPath?: string) => Promise<void>>(async () => {});
   transcribeVideoRef.current = transcribeVideo;
+
+  // Realtime streaming: the moment the first chunk (or meaningful progress) arrives,
+  // dismiss the blocking overlay and start playback while transcription continues
+  // in the background. A no-op once started, so follow-up chunks never fight playback.
+  const startRealtimePlayback = useCallback(() => {
+    if (realtimeStartedRef.current) return;
+    realtimeStartedRef.current = true;
+    realtimeStreamingActiveRef.current = true;
+    setRealtimeStreamingActive(true);
+    const node = videoRef.current;
+    if (node && node.readyState >= 2) {
+      node.play().catch(() => setIsPlaying(false));
+      autoPausedForTranscriptionRef.current = false;
+    } else {
+      pendingPlayRef.current = true;
+    }
+  }, []);
+  startRealtimePlaybackRef.current = startRealtimePlayback;
 
   // Translate the active subtitle track into the given language using the local NLLB-200 model
   const translateSubtitles = async (code: string) => {
@@ -404,7 +468,10 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     SOURCE_LANGUAGES.find((l) => l.code === sourceLanguage)?.name || sourceLanguage || "Auto-Detect";
 
   // Pause playback while the *initial* transcription for a new video is running, then auto-resume
-  const isInitialTranscribing = isTranscribing && subtitleTracks.length === 0;
+  // In "realtime" streaming mode the overlay is dismissed (and playback started) on the
+  // first decoded chunk or once progress passes 2%, so the overlay no longer blocks playback.
+  const isInitialTranscribing =
+    isTranscribing && subtitleTracks.length === 0 && !realtimeStreamingActive;
   useEffect(() => {
     if (isInitialTranscribing) {
       if (videoRef.current && !videoRef.current.paused) {
@@ -417,7 +484,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         videoRef.current.play().catch(() => setIsPlaying(false));
       }
     }
-  }, [isInitialTranscribing, isTranscribing, subtitleTracks.length, setIsPlaying]);
+  }, [isInitialTranscribing, isTranscribing, subtitleTracks.length, realtimeStreamingActive, setIsPlaying]);
 
   const handleToggleSubtitles = () => {
     const turningOn = !showSubtitles;
@@ -473,6 +540,100 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     }
   }, [currentVideoPath, showSubtitles, subtitleTracks.length]);
 
+  // Listen for real-time transcription progress from the Rust backend
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | null = null;
+    const setupProgressListener = async () => {
+      unlisten = await listen<{ percentage: number }>(
+        "transcription-progress",
+        (event) => {
+          setTranscriptionProgress(event.payload.percentage);
+          // Realtime fallback: even if no chunk has arrived yet (e.g., long silent
+          // intro), unblock playback once decoding is clearly under way.
+          const s = useAppStore.getState();
+          if (
+            s.transcriptionMode === "realtime" &&
+            s.isTranscribing &&
+            event.payload.percentage > 2
+          ) {
+            startRealtimePlaybackRef.current();
+          }
+        }
+      );
+    };
+    setupProgressListener();
+    return () => {
+      unlisten?.();
+    };
+  }, [setTranscriptionProgress]);
+
+  // Listen for streamed transcription chunks from the Rust backend.
+  // In "realtime" mode, cues are appended dynamically to a growing live track so
+  // watch-and-play can start immediately. Chunks are batched (150ms flush) so the
+  // store isn't hammered with a set() per cue, avoiding playback stutter.
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | null = null;
+
+    const flushChunks = () => {
+      const s = useAppStore.getState();
+      const trackId = streamingTrackIdRef.current;
+      const active =
+        trackId &&
+        !streamingDoneRef.current &&
+        s.transcriptionMode === "realtime" &&
+        s.currentVideoPath === streamingPathRef.current;
+      if (!active) {
+        pendingChunkCuesRef.current = [];
+        return;
+      }
+      const cues = pendingChunkCuesRef.current.splice(0);
+      if (cues.length === 0) return;
+      s.appendStreamedCues(
+        trackId!,
+        {
+          name: `Auto-Generated (${streamingTrackLabelRef.current})`,
+          language: streamingTrackLabelRef.current,
+        },
+        cues
+      );
+    };
+
+    const setupChunkListener = async () => {
+      unlisten = await listen<{ id: string; start_time: number; end_time: number; text: string }>(
+        "transcription-chunk",
+        (event) => {
+          const s = useAppStore.getState();
+          if (s.transcriptionMode !== "realtime") return;
+          if (!streamingTrackIdRef.current || streamingDoneRef.current) return;
+          if (s.currentVideoPath !== streamingPathRef.current) {
+            pendingChunkCuesRef.current = [];
+            return;
+          }
+          const p = event.payload;
+          if (!p || typeof p.start_time !== "number") return;
+          pendingChunkCuesRef.current.push({
+            id: p.id,
+            startTime: p.start_time,
+            endTime: p.end_time,
+            text: p.text,
+          });
+          // First real content: dismiss the blocking overlay and start playback.
+          startRealtimePlaybackRef.current();
+          flushChunks();
+        }
+      );
+    };
+
+    void setupChunkListener();
+    const flushTimer = window.setInterval(flushChunks, 150);
+    return () => {
+      unlisten?.();
+      window.clearInterval(flushTimer);
+    };
+  }, []);
+
   useEffect(() => {
     let unlisten: () => void;
     const setupDropListener = async () => {
@@ -511,10 +672,36 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
               if (videoRef.current) {
                 videoRef.current.volume = volume;
                 videoRef.current.muted = isMuted;
-                if (pendingPlayRef.current) {
+                // The initial-transcription pause can fire before the media is ready;
+                // don't let autoplay override it once metadata arrives, EXCEPT when
+                // realtime streaming has already unblocked the video.
+                if (
+                  pendingPlayRef.current &&
+                  (realtimeStreamingActive || !(isTranscribing && subtitleTracks.length === 0))
+                ) {
                   pendingPlayRef.current = false;
                   videoRef.current.play().catch(() => setIsPlaying(false));
+                  if (realtimeStreamingActive) {
+                    autoPausedForTranscriptionRef.current = false;
+                  }
+                } else if (pendingPlayRef.current) {
+                  pendingPlayRef.current = false;
+                  autoPausedForTranscriptionRef.current = true;
                 }
+              }
+            }}
+            onLoadedData={() => {
+              // Strict enforcement: once the frame data is actually available, if an
+              // initial transcription is still running, force the video to stay paused.
+              // (In realtime mode the overlay has already been dismissed, so skip.)
+              if (
+                videoRef.current &&
+                isTranscribing &&
+                subtitleTracks.length === 0 &&
+                !realtimeStreamingActive
+              ) {
+                videoRef.current.pause();
+                autoPausedForTranscriptionRef.current = true;
               }
             }}
           />
@@ -584,8 +771,12 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
           {isInitialTranscribing && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/60 backdrop-blur-sm pointer-events-none">
               <Loader2 className="w-10 h-10 animate-spin text-zan-cyan" />
-              <p className="text-white text-lg font-semibold">Transcribing Audio...</p>
-              <p className="text-gray-300 text-sm">Please wait</p>
+              <p className="text-white text-lg font-semibold">
+                Transcribing Audio... {Math.round(transcriptionProgress)}%
+              </p>
+              <p className="text-gray-300 text-sm">
+                {transcriptionProgress < 100 ? "Please wait" : "Finalizing subtitles..."}
+              </p>
             </div>
           )}
 
@@ -605,7 +796,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
           {isTranscribing && (
             <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 bg-black/70 backdrop-blur rounded-full border border-gray-700 shadow-xl">
               <Loader2 className="w-4 h-4 animate-spin text-zan-cyan" />
-              <span className="text-sm text-white">Transcribing audio...</span>
+              <span className="text-sm text-white">
+                Transcribing... {Math.round(transcriptionProgress)}%
+              </span>
             </div>
           )}
 

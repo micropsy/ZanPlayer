@@ -130,6 +130,8 @@ export const SettingsComponent = () => {
     setTranslationModelAvailable,
     translationModelLoading,
     translationError,
+    transcriptionMode,
+    setTranscriptionMode,
   } = useAppStore();
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
@@ -862,6 +864,65 @@ export const SettingsComponent = () => {
               </button>
             </div>
           </div>
+        </div>
+      </section>
+
+      {/* Transcription Mode */}
+      <section className="space-y-4">
+        <h3 className={`text-sm font-semibold flex items-center gap-2 ${valueClass(theme)}`}>
+          <Languages className="w-4 h-4 opacity-70" />
+          Transcription Mode
+        </h3>
+        <p className={`text-xs ${labelClass(theme)}`}>
+          How subtitles are produced while a video is being transcribed.
+        </p>
+        <div className="grid grid-cols-1 gap-2">
+          <button
+            onClick={() => setTranscriptionMode("realtime")}
+            className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
+              transcriptionMode === "realtime"
+                ? "bg-zan-cyan/15 border-zan-cyan/50"
+                : card(theme)
+            }`}
+          >
+            <span
+              className={`mt-0.5 inline-block w-3 h-3 rounded-full border-2 shrink-0 ${
+                transcriptionMode === "realtime" ? "bg-zan-cyan border-zan-cyan" : "border-gray-400"
+              }`}
+            />
+            <span>
+              <span className={`block text-sm font-medium ${valueClass(theme)}`}>
+                Real-time (Streaming)
+              </span>
+              <span className={`block text-xs mt-0.5 ${labelClass(theme)}`}>
+                Subtitles appear dynamically while playing, so you can start watching almost
+                immediately.
+              </span>
+            </span>
+          </button>
+          <button
+            onClick={() => setTranscriptionMode("full")}
+            className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
+              transcriptionMode === "full"
+                ? "bg-zan-cyan/15 border-zan-cyan/50"
+                : card(theme)
+            }`}
+          >
+            <span
+              className={`mt-0.5 inline-block w-3 h-3 rounded-full border-2 shrink-0 ${
+                transcriptionMode === "full" ? "bg-zan-cyan border-zan-cyan" : "border-gray-400"
+              }`}
+            />
+            <span>
+              <span className={`block text-sm font-medium ${valueClass(theme)}`}>
+                Full (Batch)
+              </span>
+              <span className={`block text-xs mt-0.5 ${labelClass(theme)}`}>
+                Waits for 100% completion before showing subtitles. Best for exporting and
+                precise editing.
+              </span>
+            </span>
+          </button>
         </div>
       </section>
     </div>

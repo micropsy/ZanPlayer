@@ -7,6 +7,9 @@
     "core:default",
     "dialog:default",
     "fs:default",
+    "fs:allow-app-read-recursive",
+    "fs:allow-app-write-recursive",
+    "fs:allow-app-meta-recursive",
     "http:default",
     "updater:default"
   ]
