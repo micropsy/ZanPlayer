@@ -20,8 +20,8 @@ A modern, beautiful desktop video player with AI-powered subtitle generation and
 ### AI Features
 - 🤖 Local subtitle generation using Whisper (offline, no API key!)
 - 🌐 Local translation to English using Whisper
-- 📄 Load existing subtitle files (SRT, VTT)
-- 💾 Export subtitles in SRT or VTT formats
+- 📄 Load existing subtitle files (SRT, VTT, and ASS/SSA)
+- 💾 Export subtitles in SRT, VTT, or ASS formats
 - 📦 Model manager to download/delete Whisper models locally
 
 ### Subtitle Editor
@@ -50,8 +50,10 @@ A modern, beautiful desktop video player with AI-powered subtitle generation and
 ## Installation
 
 ### Prerequisites
-1. **Node.js** (v18 or higher)
+1. **Node.js** (v20 or higher)
 2. **Rust** (for Tauri)
+3. **Xcode Command Line Tools** (macOS only)
+4. A **macOS Apple Silicon (arm64)** machine (the bundled FFmpeg sidecar is built for arm64)
 
 ### Steps
 
@@ -73,9 +75,14 @@ npm run tauri dev
 
 ## FFmpeg & Whisper Setup
 
-**No manual setup needed!** The app automatically:
-- Downloads FFmpeg on first launch
-- Downloads Whisper models when selected in settings
+FFmpeg is bundled as a Tauri sidecar binary and extracted automatically on first launch — no manual setup needed!
+
+- **Audio extraction**: handled by the bundled ffmpeg sidecar (`src-tauri/binaries/ffmpeg-aarch64-apple-darwin`)
+- **Subtitles**: Whisper models are downloaded on demand from the Settings panel and run 100% locally
+
+> **Note for contributors**: to rebuild the FFmpeg sidecar, place a static macOS-arm64 FFmpeg binary at
+> `src-tauri/binaries/ffmpeg-aarch64-apple-darwin`. A Homebrew (`/opt/homebrew/bin/ffmpeg`) copy works for local
+> testing but is dynamically linked and **not** distributable.
 
 ## Project Structure
 
@@ -124,7 +131,6 @@ Sub Player/
 
 ## Future Plans
 
-- [ ] More subtitle formats (ASS, SSA, etc.)
 - [ ] Project save/load
 - [ ] Tests for frontend and backend
 - [ ] Connect subtitle editor with video player (seek to cue on click)

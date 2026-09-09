@@ -27,6 +27,11 @@ Thumbs.db
 # Tauri
 src-tauri/target/
 src-tauri/Cargo.lock
+# Machine-specific FFmpeg sidecar binary (see README)
+src-tauri/binaries/
 
 # Private key (keep secret!)
 private-key.pem
+
+# Local machine backups
+backups/

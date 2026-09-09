@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
 import { readFile } from "@tauri-apps/plugin-fs";
@@ -133,6 +133,31 @@ export class TauriService {
     }));
   }
 
+  static async processDroppedVideo(
+    videoPath: string,
+    modelName: string,
+    language?: string,
+    targetLanguage?: string
+  ): Promise<SubtitleCue[]> {
+    if (!isTauri()) {
+      throw new Error("This feature requires the Tauri app");
+    }
+    const cues = await invoke<
+      Array<{ id: string; start_time: number; end_time: number; text: string }>
+    >("process_dropped_video", {
+      videoPath,
+      modelName,
+      language,
+      targetLanguage,
+    });
+    return cues.map((c) => ({
+      id: c.id,
+      startTime: c.start_time,
+      endTime: c.end_time,
+      text: c.text,
+    }));
+  }
+
   static async downloadWhisperModel(
     modelName: string,
     onProgress?: (percent: number, speedMBps: number, etaSeconds: number) => void
@@ -191,15 +216,13 @@ export class TauriService {
     if (!isTauri()) {
       return false;
     }
-    return await invoke<boolean>("checkModelDownloaded", { modelName });
+    return await invoke<boolean>("check_model_downloaded", { modelName });
   }
 
   static async getVideoBlobUrl(filePath: string): Promise<string> {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
-    const fileData = await readFile(filePath);
-    const blob = new Blob([fileData], { type: "video/mp4" });
-    return URL.createObjectURL(blob);
+    return convertFileSrc(filePath);
   }
 }

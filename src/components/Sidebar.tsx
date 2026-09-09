@@ -4,13 +4,12 @@ import {
   Languages,
   Upload,
   AlertCircle,
-  CheckCircle2,
   Download,
   Settings as SettingsIcon,
+  PenLine,
   Trash2,
   List,
   FileText,
-  Plus,
   FileVideo,
   Menu,
 } from "lucide-react";
@@ -20,9 +19,14 @@ import { SettingsComponent } from "./Settings";
 import { cn } from "../utils/cn";
 import type { SubtitleTrack } from "../types/subtitle";
 
-type Tab = "main" | "settings" | "editor";
+type Tab = "main" | "settings";
 
-export const Sidebar = () => {
+interface SidebarProps {
+  editorOpen?: boolean;
+  onToggleEditor?: () => void;
+}
+
+export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) => {
   const {
     setCurrentVideoUrl,
     subtitleTracks,
@@ -33,47 +37,16 @@ export const Sidebar = () => {
     setActiveTranslatedTrackId,
     currentVideo,
     setCurrentVideo,
-    currentVideoPath,
     setCurrentVideoPath,
-    updateCue,
-    updateCueTiming,
     shiftAllCues,
-    deleteCue,
-    addCue,
-    progressStep,
-    progressPercent,
-    setProgress,
-    whisperModel,
-    setSeekTo,
     theme,
     setSidebarVisible,
-    targetLanguage,
-    setTargetLanguage,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<Tab>("main");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [shiftOffset, setShiftOffset] = useState<string>("0");
   const [showExportOptions, setShowExportOptions] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-
-  const languages = [
-    { code: "auto", name: "Auto (Detect)" },
-    { code: "en", name: "English" },
-    { code: "my", name: "Burmese" },
-    { code: "es", name: "Spanish" },
-    { code: "fr", name: "French" },
-    { code: "de", name: "German" },
-    { code: "zh", name: "Chinese (Simplified)" },
-    { code: "zh-TW", name: "Chinese (Traditional)" },
-    { code: "ja", name: "Japanese" },
-    { code: "ko", name: "Korean" },
-    { code: "pt", name: "Portuguese" },
-    { code: "ru", name: "Russian" },
-    { code: "ar", name: "Arabic" },
-    { code: "hi", name: "Hindi" },
-    { code: "th", name: "Thai" },
-    { code: "vi", name: "Vietnamese" },
-  ];
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -222,7 +195,6 @@ export const Sidebar = () => {
       fileInputRef.current?.click();
       return;
     }
-    setProgress("selecting" as any, 0);
     setErrorMessage(null);
     try {
       const videoFile = await TauriService.openVideoDialog();
@@ -233,8 +205,6 @@ export const Sidebar = () => {
       }
     } catch (error) {
       setErrorMessage(`Error selecting video: ${(error as Error).message}`);
-    } finally {
-      setProgress("idle", 0);
     }
   };
 
@@ -258,68 +228,6 @@ export const Sidebar = () => {
       }
     } catch (error) {
       setErrorMessage(`Error loading subtitle: ${(error as Error).message}`);
-    }
-  };
-
-  const handleGenerateSubtitles = async () => {
-    if (!currentVideo && !currentVideoPath) {
-      alert("Please select a video first");
-      return;
-    }
-
-    setProgress("extracting", 0);
-    setErrorMessage(null);
-    let extractedAudioPath: string | null = null;
-    let tempVideoPath: string | null = null;
-
-    try {
-      if (currentVideoPath) {
-        const audioPath = await TauriService.extractAudio(currentVideoPath);
-        extractedAudioPath = audioPath;
-        setProgress("extracting", 100);
-      } else if (currentVideo) {
-        // For local whisper with uploaded file, we need to write it to disk first
-        setProgress("saving", 25);
-        const fileArrayBuffer = await currentVideo.arrayBuffer();
-        const fileUint8Array = new Uint8Array(fileArrayBuffer);
-        tempVideoPath = await TauriService.writeFile(currentVideo.name, fileUint8Array);
-        setProgress("extracting", 50);
-        
-        const audioPath = await TauriService.extractAudio(tempVideoPath);
-        extractedAudioPath = audioPath;
-        setProgress("extracting", 100);
-      }
-
-      setProgress("transcribing", 0);
-      let cues;
-      if (!extractedAudioPath) {
-        throw new Error("Local transcription requires extracting audio first");
-      }
-      const languageToUse = targetLanguage === "auto" ? undefined : targetLanguage;
-      cues = await TauriService.transcribeAudioLocal(
-        extractedAudioPath,
-        whisperModel,
-        undefined, // source language - let whisper auto-detect
-        languageToUse
-      );
-      setProgress("transcribing", 100);
-
-      const selectedLang = languages.find(l => l.code === targetLanguage);
-      const newTrack: SubtitleTrack = {
-        id: `track-${Date.now()}`,
-        name: `Auto-Generated (${selectedLang?.name || "English"})`,
-        language: selectedLang?.name || "English",
-        cues,
-        isGenerated: true,
-      };
-
-      setSubtitleTracks([...subtitleTracks, newTrack]);
-      setActiveSubtitleTrackId(newTrack.id);
-      setTimeout(() => setProgress("idle", 0), 1500);
-    } catch (error) {
-      console.error("Subtitle generation error:", error);
-      setErrorMessage(`Error: ${(error as Error).message}`);
-      setProgress("idle", 0);
     }
   };
 
@@ -378,21 +286,7 @@ export const Sidebar = () => {
     }
   };
 
-  const getStepText = () => {
-    switch (progressStep) {
-      case "extracting":
-        return "Extracting audio...";
-      case "transcribing":
-        return "Transcribing audio...";
-      default:
-        return "";
-    }
-  };
-
-  const isProcessing = progressStep !== "idle";
-  const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
-  const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
-  const hasTracks = originalTrack || translatedTrack;
+  const hasTracks = !!(activeSubtitleTrackId || activeTranslatedTrackId);
 
 
 
@@ -449,12 +343,13 @@ export const Sidebar = () => {
             Main
           </div>
         </button>
-        {hasTracks && (
+        {hasTracks && onToggleEditor && (
           <button
-            onClick={() => setActiveTab("editor")}
+            onClick={onToggleEditor}
+            title={editorOpen ? "Hide subtitle editor" : "Show subtitle editor"}
             className={cn(
-              "flex-1 py-3 px-4 text-sm font-medium transition-colors",
-              activeTab === "editor"
+              "p-3 transition-colors",
+              editorOpen
                 ? theme === "dark"
                   ? "bg-gray-800 text-white border-b-2 border-blue-500"
                   : "bg-gray-100 text-gray-900 border-b-2 border-blue-500"
@@ -463,17 +358,14 @@ export const Sidebar = () => {
                   : "text-gray-500 hover:text-gray-700"
             )}
           >
-            <div className="flex items-center justify-center gap-2">
-              <FileText className="w-4 h-4" />
-              Editor
-            </div>
+            <PenLine className="w-4 h-4" />
           </button>
         )}
         <button
           onClick={() => setActiveTab("settings")}
           className={cn(
             "p-3 transition-colors",
-            (activeTab as Tab) === "settings"
+            activeTab === "settings"
               ? theme === "dark"
                 ? "bg-gray-800 text-white border-b-2 border-blue-500"
                 : "bg-gray-100 text-gray-900 border-b-2 border-blue-500"
@@ -506,35 +398,11 @@ export const Sidebar = () => {
               : "border-gray-200 bg-gradient-to-b from-gray-50 to-white"
           )}>
 
-            {/* Error/Success Messages */}
+            {/* Error Message */}
             {errorMessage && (
               <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-2">
                 <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
                 <p className="text-red-300 text-sm">{errorMessage}</p>
-              </div>
-            )}
-            {progressPercent === 100 && progressStep !== "idle" && (
-              <div className="mb-4 p-3 bg-green-500/10 border border-green-500/20 rounded-lg flex items-center gap-2">
-                <CheckCircle2 className="w-5 h-5 text-green-400" />
-                <p className="text-green-300 text-sm">Completed successfully!</p>
-              </div>
-            )}
-            {/* Progress Bar */}
-            {isProcessing && (
-              <div className="mb-4">
-                <p className={cn(
-                  "text-sm mb-2",
-                  theme === "dark" ? "text-gray-300" : "text-gray-600"
-                )}>{getStepText()}</p>
-                <div className={cn(
-                  "h-2 rounded-full overflow-hidden",
-                  theme === "dark" ? "bg-gray-700" : "bg-gray-200"
-                )}>
-                  <div
-                    className="h-full bg-gradient-to-r from-blue-500 to-blue-700 transition-all duration-300"
-                    style={{ width: `${progressPercent}%` }}
-                  />
-                </div>
               </div>
             )}
 
@@ -574,40 +442,7 @@ export const Sidebar = () => {
             {/* Controls */}
             <div className="space-y-3">
               <button
-                onClick={handleGenerateSubtitles}
-                disabled={isProcessing || (!currentVideo && !currentVideoPath)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 disabled:from-gray-600 disabled:to-gray-700 text-white rounded-xl transition-all hover:scale-[1.01] active:scale-[0.99] shadow-lg shadow-green-900/20"
-              >
-                <Languages className="w-5 h-5" />
-                {getStepText() || "Auto-Transcribe"}
-              </button>
-
-              <div className="space-y-2">
-                <label className={cn(
-                  "block text-xs font-semibold uppercase tracking-wider",
-                  theme === "dark" ? "text-gray-400" : "text-gray-500"
-                )}>
-                  Translate To
-                </label>
-                <select
-                  value={targetLanguage}
-                  onChange={(e) => setTargetLanguage(e.target.value)}
-                  className={cn(
-                    "w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2",
-                    theme === "dark"
-                      ? "bg-gray-800 border-gray-700 text-white focus:border-blue-500 focus:ring-blue-500/20"
-                      : "bg-white border-gray-300 text-gray-900 focus:border-blue-500 focus:ring-blue-500/20"
-                  )}
-                >
-                  {languages.map((lang) => (
-                    <option key={lang.code} value={lang.code}>{lang.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <button
                 onClick={handleLoadSubtitleFile}
-                disabled={isProcessing}
                 className={cn(
                   "w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl transition-all",
                   theme === "dark"
@@ -806,216 +641,6 @@ export const Sidebar = () => {
                 </div>
               )}
             </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === "editor" && (
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className={cn(
-            "p-4 border-b",
-            theme === "dark"
-              ? "border-gray-700 bg-gray-850"
-              : "border-gray-200 bg-gray-50"
-          )}>
-            <h3 className={cn(
-              "text-xs font-semibold uppercase tracking-wider",
-              theme === "dark" ? "text-gray-400" : "text-gray-500"
-            )}>
-              Subtitle Editor
-            </h3>
-          </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-3">
-            {originalTrack?.cues.map((originalCue, index) => {
-              const translatedCue = translatedTrack?.cues[index];
-              return (
-                <div
-                  key={originalCue.id}
-                  className={cn(
-                    "rounded-xl p-4 border transition-all cursor-pointer",
-                    theme === "dark"
-                      ? "bg-gray-800 border-gray-700 hover:border-blue-500 hover:bg-gray-750"
-                      : "bg-white border-gray-200 hover:border-blue-500 hover:bg-gray-50"
-                  )}
-                  onClick={() => setSeekTo(originalCue.startTime)}
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <span className={cn(
-                      "text-xs font-mono",
-                      theme === "dark" ? "text-gray-500" : "text-gray-400"
-                    )}>
-                      {Math.floor(originalCue.startTime / 3600).toString().padStart(2, "0")}:
-                      {Math.floor((originalCue.startTime % 3600) / 60).toString().padStart(2, "0")}:
-                      {Math.floor(originalCue.startTime % 60).toString().padStart(2, "0")},
-                      {Math.floor((originalCue.startTime % 1) * 1000).toString().padStart(3, "0")}
-                       → 
-                      {Math.floor(originalCue.endTime / 3600).toString().padStart(2, "0")}:
-                      {Math.floor((originalCue.endTime % 3600) / 60).toString().padStart(2, "0")}:
-                      {Math.floor(originalCue.endTime % 60).toString().padStart(2, "0")},
-                      {Math.floor((originalCue.endTime % 1) * 1000).toString().padStart(3, "0")}
-                    </span>
-                    <button
-                      onClick={() => deleteCue(originalTrack.id, originalCue.id)}
-                      className={cn(
-                        "p-1 rounded transition-all",
-                        theme === "dark"
-                          ? "text-gray-500 hover:bg-red-500/20 hover:text-red-400"
-                          : "text-gray-400 hover:bg-red-50 hover:text-red-500"
-                      )}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-3">
-                    {originalTrack && (
-                      <div>
-                        <label className="text-xs font-semibold text-green-400 uppercase tracking-wider mb-1 block">
-                          Original
-                        </label>
-                        <textarea
-                          value={originalCue.text}
-                          onChange={(e) => updateCue(originalTrack.id, originalCue.id, e.target.value)}
-                          className={cn(
-                            "w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:border-blue-500 resize-none",
-                            theme === "dark"
-                              ? "bg-gray-900 border-gray-700 text-white"
-                              : "bg-white border-gray-300 text-gray-900"
-                          )}
-                          rows={2}
-                        />
-                      </div>
-                    )}
-                    {translatedTrack && translatedCue && (
-                      <div>
-                        <label className="text-xs font-semibold text-purple-400 uppercase tracking-wider mb-1 block">
-                          Translated
-                        </label>
-                        <textarea
-                          value={translatedCue.text}
-                          onChange={(e) => updateCue(translatedTrack.id, translatedCue.id, e.target.value)}
-                          className={cn(
-                            "w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:border-blue-500 resize-none",
-                            theme === "dark"
-                              ? "bg-gray-900 border-gray-700 text-white"
-                              : "bg-white border-gray-300 text-gray-900"
-                          )}
-                          rows={2}
-                        />
-                      </div>
-                    )}
-                  </div>
-
-                  <div className={cn(
-                    "mt-3 pt-3 border-t flex gap-2",
-                    theme === "dark" ? "border-gray-700" : "border-gray-200"
-                  )}>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={originalCue.startTime}
-                      onChange={(e) =>
-                        updateCueTiming(
-                          originalTrack.id,
-                          originalCue.id,
-                          parseFloat(e.target.value) || 0,
-                          originalCue.endTime
-                        )
-                      }
-                      className={cn(
-                        "w-full px-2 py-1 border rounded text-sm",
-                        theme === "dark"
-                          ? "bg-gray-900 border-gray-700 text-white"
-                          : "bg-white border-gray-300 text-gray-900"
-                      )}
-                      placeholder="Start time"
-                    />
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={originalCue.endTime}
-                      onChange={(e) =>
-                        updateCueTiming(
-                          originalTrack.id,
-                          originalCue.id,
-                          originalCue.startTime,
-                          parseFloat(e.target.value) || 0
-                        )
-                      }
-                      className={cn(
-                        "w-full px-2 py-1 border rounded text-sm",
-                        theme === "dark"
-                          ? "bg-gray-900 border-gray-700 text-white"
-                          : "bg-white border-gray-300 text-gray-900"
-                      )}
-                      placeholder="End time"
-                    />
-                  </div>
-                </div>
-              );
-            })}
-
-            {!originalTrack && translatedTrack?.cues.map((cue) => (
-              <div
-                key={cue.id}
-                className={cn(
-                  "rounded-xl p-4 border transition-all cursor-pointer",
-                  theme === "dark"
-                    ? "bg-gray-800 border-gray-700 hover:border-blue-500 hover:bg-gray-750"
-                    : "bg-white border-gray-200 hover:border-blue-500 hover:bg-gray-50"
-                )}
-                onClick={() => setSeekTo(cue.startTime)}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <span className={cn(
-                    "text-xs font-mono",
-                    theme === "dark" ? "text-gray-500" : "text-gray-400"
-                  )}>
-                    {Math.floor(cue.startTime / 3600).toString().padStart(2, "0")}:
-                    {Math.floor((cue.startTime % 3600) / 60).toString().padStart(2, "0")}:
-                    {Math.floor(cue.startTime % 60).toString().padStart(2, "0")}
-                  </span>
-                </div>
-                <textarea
-                  value={cue.text}
-                  onChange={(e) => updateCue(translatedTrack.id, cue.id, e.target.value)}
-                  className={cn(
-                    "w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:border-blue-500 resize-none",
-                    theme === "dark"
-                      ? "bg-gray-900 border-gray-700 text-white"
-                      : "bg-white border-gray-300 text-gray-900"
-                  )}
-                  rows={2}
-                />
-              </div>
-            ))}
-
-            {originalTrack && (
-              <button
-                onClick={() => {
-                  const newCue = {
-                    id: `cue-${Date.now()}`,
-                    startTime: originalTrack.cues.length > 0
-                      ? originalTrack.cues[originalTrack.cues.length - 1].endTime + 1
-                      : 0,
-                    endTime: originalTrack.cues.length > 0
-                      ? originalTrack.cues[originalTrack.cues.length - 1].endTime + 4
-                      : 3,
-                    text: "",
-                  };
-                  addCue(originalTrack.id, newCue);
-                }}
-                className={cn(
-                  "w-full flex items-center justify-center gap-2 p-3 border-2 border-dashed rounded-xl transition-all",
-                  theme === "dark"
-                    ? "border-gray-700 text-gray-400 hover:text-white hover:border-gray-600"
-                    : "border-gray-300 text-gray-500 hover:text-gray-700 hover:border-gray-400"
-                )}
-              >
-                <Plus className="w-4 h-4" />
-                Add Cue
-              </button>
-            )}
           </div>
         </div>
       )}

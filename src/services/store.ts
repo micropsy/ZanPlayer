@@ -62,14 +62,16 @@ interface AppState {
     setWhisperModel: (model: string) => void;
     targetLanguage: string;
     setTargetLanguage: (lang: string) => void;
+    isTranscribing: boolean;
+    setIsTranscribing: (val: boolean) => void;
 
     // Model management
     downloadedModels: string[];
     setDownloadedModels: (models: string[]) => void;
     downloadingModels: Set<string>;
     setDownloadingModels: (models: Set<string>) => void;
-    modelDownloadProgress: Record<string, { percent: number; speedMBps: number; etaSeconds: number; error: boolean }>;
-    setModelDownloadProgress: (modelName: string, progress: { percent: number; speedMBps: number; etaSeconds: number; error: boolean }) => void;
+    modelDownloadProgress: Record<string, { percent: number; speedMBps: number; etaSeconds: number; error: boolean; message?: string }>;
+    setModelDownloadProgress: (modelName: string, progress: { percent: number; speedMBps: number; etaSeconds: number; error: boolean; message?: string }) => void;
     loadDownloadedModels: () => Promise<void>;
     downloadModel: (modelName: string) => Promise<void>;
     deleteModel: (modelName: string) => Promise<void>;
@@ -183,6 +185,8 @@ export const useAppStore = create<AppState>()(
             setWhisperModel: (model: string) => set({ whisperModel: model }),
             targetLanguage: "en",
             setTargetLanguage: (lang: string) => set({ targetLanguage: lang }),
+            isTranscribing: false,
+            setIsTranscribing: (val: boolean) => set({ isTranscribing: val }),
 
             // Model management
             downloadedModels: [],
@@ -236,13 +240,15 @@ export const useAppStore = create<AppState>()(
                         return { modelDownloadProgress: newProgress };
                     });
                 } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
                     console.error(`Failed to download model ${modelName}:`, err);
                     set((s) => ({
                         modelDownloadProgress: {
                             ...s.modelDownloadProgress,
                             [modelName]: { 
                                 ...(s.modelDownloadProgress[modelName] || { percent: 0, speedMBps: 0, etaSeconds: 0 }),
-                                error: true 
+                                error: true,
+                                message
                             }
                         }
                     }));

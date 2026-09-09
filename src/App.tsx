@@ -1,9 +1,10 @@
 import { useAppStore } from './services/store';
 import { Sidebar } from './components/Sidebar';
 import { VideoPlayer } from './components/VideoPlayer';
+import { SubtitleEditor } from './components/SubtitleEditor';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Menu, FileVideo } from 'lucide-react';
-import { listen } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
 import { TauriService, isTauri } from './services/tauri';
 
 // Helper functions to check file types
@@ -33,6 +34,7 @@ function App() {
   const setActiveSubtitleTrackId = useAppStore(state => state.setActiveSubtitleTrackId);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [editorOpen, setEditorOpen] = useState(false);
 
   // Helper to parse SRT
   const parseSRT = (text: string) => {
@@ -122,6 +124,7 @@ function App() {
           setCurrentVideo(null); // Clear any File object
           setCurrentVideoUrl(url);
           setCurrentVideoPath(filePath);
+          emit('subplayer:video-dropped');
         } catch (error) {
           console.error('Failed to load video/audio:', error);
         }
@@ -274,7 +277,12 @@ function App() {
         </div>
       )}
 
-      {sidebarVisible && <Sidebar />}
+      {sidebarVisible && (
+        <Sidebar
+          editorOpen={editorOpen}
+          onToggleEditor={() => setEditorOpen(v => !v)}
+        />
+      )}
       <div className="flex-1 relative">
         {!sidebarVisible && (
           <button
@@ -290,6 +298,7 @@ function App() {
         )}
         <VideoPlayer />
       </div>
+      {editorOpen && <SubtitleEditor onClose={() => setEditorOpen(false)} />}
     </div>
   );
 }

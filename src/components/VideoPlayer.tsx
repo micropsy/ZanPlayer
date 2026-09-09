@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useAppStore, type SubtitleDisplayMode } from "../services/store";
 import {
   Play,
@@ -13,9 +14,31 @@ import {
   SkipBack,
   FileVideo,
   CheckCircle2,
+  Loader2,
+  ChevronRight,
+  ChevronLeft,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { TauriService, isTauri } from "../services/tauri";
+import type { SubtitleTrack } from "../types/subtitle";
+
+const SUBTITLE_LANGUAGES = [
+  { code: "auto", name: "Original" },
+  { code: "en", name: "English" },
+  { code: "es", name: "Spanish" },
+  { code: "my", name: "Burmese" },
+  { code: "fr", name: "French" },
+  { code: "de", name: "German" },
+  { code: "ja", name: "Japanese" },
+  { code: "ko", name: "Korean" },
+  { code: "zh", name: "Chinese (Simplified)" },
+  { code: "pt", name: "Portuguese" },
+  { code: "ru", name: "Russian" },
+  { code: "th", name: "Thai" },
+  { code: "vi", name: "Vietnamese" },
+  { code: "hi", name: "Hindi" },
+  { code: "ar", name: "Arabic" },
+];
 
 export const VideoPlayer = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -25,6 +48,8 @@ export const VideoPlayer = () => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [videoSource, setVideoSource] = useState<string | null>(null);
   const [showCCMenu, setShowCCMenu] = useState(false);
+  const [ccMenuView, setCcMenuView] = useState<"root" | "language" | "mode">("root");
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const {
     currentVideoUrl,
     currentVideoPath,
@@ -41,9 +66,14 @@ export const VideoPlayer = () => {
     seekTo,
     setSeekTo,
     subtitleStyle,
+    targetLanguage,
+    setTargetLanguage,
+    isTranscribing,
+    setIsTranscribing,
   } = useAppStore();
 
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPlayRef = useRef(false);
 
   const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
   const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
@@ -223,6 +253,64 @@ export const VideoPlayer = () => {
     return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
   };
 
+  // Transcribe the current video via process_dropped_video (extract + whisper + cleanup)
+  const transcribeVideo = async () => {
+    const s = useAppStore.getState();
+    if (s.isTranscribing) return;
+    const videoPath = s.currentVideoPath;
+    if (!videoPath) {
+      console.error("Auto-transcribe requires a video path");
+      return;
+    }
+    setTranscriptionError(null);
+    const langToUse =
+      s.targetLanguage === "auto" || s.targetLanguage === "original"
+        ? undefined
+        : s.targetLanguage;
+    setIsTranscribing(true);
+    try {
+      const cues = await TauriService.processDroppedVideo(
+        videoPath,
+        s.whisperModel,
+        undefined,
+        langToUse
+      );
+      const selectedLang = SUBTITLE_LANGUAGES.find((l) => l.code === s.targetLanguage);
+      const label = !langToUse ? "Original" : selectedLang?.name || s.targetLanguage;
+      const newTrack: SubtitleTrack = {
+        id: `track-${Date.now()}`,
+        name: `Auto-Generated (${label})`,
+        language: label,
+        cues,
+        isGenerated: true,
+      };
+      useAppStore.getState().setSubtitleTracks([...useAppStore.getState().subtitleTracks, newTrack]);
+      useAppStore.getState().setActiveSubtitleTrackId(newTrack.id);
+      useAppStore.getState().setShowSubtitles(true);
+    } catch (err) {
+      console.error("Auto-transcription error:", err);
+      setTranscriptionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      useAppStore.getState().setIsTranscribing(false);
+    }
+  };
+
+  const transcribeVideoRef = useRef<() => Promise<void>>(async () => {});
+  transcribeVideoRef.current = transcribeVideo;
+
+  const currentLanguageLabel =
+    SUBTITLE_LANGUAGES.find((l) => l.code === targetLanguage)?.name ||
+    targetLanguage ||
+    "Original";
+
+  const handleToggleSubtitles = () => {
+    const turningOn = !showSubtitles;
+    setShowSubtitles(turningOn);
+    if (turningOn && subtitleTracks.length === 0 && !isTranscribing) {
+      transcribeVideoRef.current();
+    }
+  };
+
   // Handle video source management
   useEffect(() => {
     if (currentVideoUrl) {
@@ -262,11 +350,33 @@ export const VideoPlayer = () => {
     }
   }, [currentVideoPath, currentVideoUrl]);
 
+  useEffect(() => {
+    let unlisten: () => void;
+    const setupDropListener = async () => {
+      if (!isTauri()) return;
+      unlisten = await listen("subplayer:video-dropped", () => {
+        pendingPlayRef.current = true;
+        const s = useAppStore.getState();
+        if (s.subtitleTracks.length === 0 && !s.isTranscribing && s.currentVideoPath) {
+          transcribeVideoRef.current();
+        }
+      });
+    };
+    setupDropListener();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
   return (
     <div
       className="relative w-full h-full bg-black group"
       onMouseMove={handleMouseMove}
       onMouseLeave={() => isPlaying && setShowControls(false)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
     >
       {videoSource ? (
         <>
@@ -282,6 +392,10 @@ export const VideoPlayer = () => {
               if (videoRef.current) {
                 videoRef.current.volume = volume;
                 videoRef.current.muted = isMuted;
+                if (pendingPlayRef.current) {
+                  pendingPlayRef.current = false;
+                  videoRef.current.play().catch(() => setIsPlaying(false));
+                }
               }
             }}
           />
@@ -359,6 +473,14 @@ export const VideoPlayer = () => {
             )}
           </div>
 
+          {/* Transcribing Indicator */}
+          {isTranscribing && (
+            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 bg-black/70 backdrop-blur rounded-full border border-gray-700 shadow-xl">
+              <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+              <span className="text-sm text-white">Transcribing audio...</span>
+            </div>
+          )}
+
           {/* Controls Bar */}
           <div
             className={cn(
@@ -428,56 +550,148 @@ export const VideoPlayer = () => {
               <div className="flex items-center gap-3">
                 <div className="relative" data-cc-menu>
                   <button
-                    onClick={() => setShowCCMenu(!showCCMenu)}
-                    className="text-white hover:text-blue-400 transition-colors"
+                    onClick={() => {
+                      setShowCCMenu(!showCCMenu);
+                      if (showCCMenu) setCcMenuView("root");
+                    }}
+                    className={cn(
+                      "transition-colors",
+                      showSubtitles ? "text-blue-400 hover:text-blue-300" : "text-white hover:text-blue-400"
+                    )}
                     title={showSubtitles ? "Subtitle Settings" : "Show Subtitles"}
                   >
                     {showSubtitles ? <Captions className="w-6 h-6" /> : <CaptionsOff className="w-6 h-6" />}
                   </button>
                   
                   {showCCMenu && (
-                    <div className="absolute bottom-full right-0 mb-3 bg-gray-900/95 backdrop-blur rounded-xl shadow-2xl border border-gray-700 min-w-[200px] overflow-hidden">
-                      <div className="p-3 border-b border-gray-700">
-                        <button
-                          onClick={() => setShowSubtitles(!showSubtitles)}
-                          className="w-full flex items-center gap-3 px-3 py-2 text-sm text-white hover:bg-gray-800 rounded-lg transition-colors"
-                        >
-                          <div className={cn(
-                            "w-5 h-5 rounded border-2 flex items-center justify-center",
-                            showSubtitles ? "bg-blue-600 border-blue-600" : "border-gray-500"
-                          )}>
-                            {showSubtitles && <div className="w-2 h-2 bg-white rounded-full" />}
+                    <div className="absolute bottom-full right-0 mb-3 bg-gray-900/95 backdrop-blur rounded-xl shadow-2xl border border-gray-700 min-w-[220px] overflow-hidden">
+                      {ccMenuView === "language" ? (
+                        <>
+                          <div className="flex items-center px-2 py-2 border-b border-gray-700">
+                            <button
+                              onClick={() => setCcMenuView("root")}
+                              className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                            >
+                              <ChevronLeft className="w-4 h-4" />
+                            </button>
+                            <span className="text-sm font-semibold text-white px-2">Language</span>
                           </div>
-                          Show Subtitles
-                        </button>
-                      </div>
-                      <div className="p-2">
-                        <p className="text-xs text-gray-400 px-2 py-1">Caption Mode</p>
-                        {[
-                          { mode: "original", label: "Original Only" },
-                          { mode: "translated", label: "Translated Only" },
-                          { mode: "dual", label: "Dual Subtitles" },
-                        ].map(({ mode, label }) => (
-                          <button
-                            key={mode}
-                            onClick={() => {
-                              setSubtitleDisplayMode(mode as SubtitleDisplayMode);
-                              setShowCCMenu(false);
-                            }}
-                            className={cn(
-                              "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-lg transition-colors",
-                              subtitleDisplayMode === mode 
-                                ? "text-blue-400 bg-blue-900/30" 
-                                : "text-gray-300 hover:bg-gray-800"
+                          <div className="max-h-64 overflow-y-auto p-1">
+                            {SUBTITLE_LANGUAGES.map((lang) => (
+                              <button
+                                key={lang.code}
+                                onClick={() => {
+                                  setTargetLanguage(lang.code);
+                                  if (lang.code !== "auto" && subtitleTracks.length === 0 && !isTranscribing) {
+                                    transcribeVideoRef.current();
+                                  }
+                                  setCcMenuView("root");
+                                }}
+                                className={cn(
+                                  "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-lg transition-colors",
+                                  targetLanguage === lang.code
+                                    ? "text-blue-400 bg-blue-900/30"
+                                    : "text-gray-300 hover:bg-gray-800"
+                                )}
+                              >
+                                {lang.name}
+                                {targetLanguage === lang.code && <CheckCircle2 className="w-4 h-4" />}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      ) : ccMenuView === "mode" ? (
+                        <>
+                          <div className="flex items-center px-2 py-2 border-b border-gray-700">
+                            <button
+                              onClick={() => setCcMenuView("root")}
+                              className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                            >
+                              <ChevronLeft className="w-4 h-4" />
+                            </button>
+                            <span className="text-sm font-semibold text-white px-2">Caption Mode</span>
+                          </div>
+                          <div className="p-1">
+                            {[
+                              { mode: "original", label: "Original Only" },
+                              { mode: "translated", label: "Translated Only" },
+                              { mode: "dual", label: "Dual Subtitles" },
+                            ].map(({ mode, label }) => (
+                              <button
+                                key={mode}
+                                onClick={() => {
+                                  setSubtitleDisplayMode(mode as SubtitleDisplayMode);
+                                  setShowCCMenu(false);
+                                }}
+                                className={cn(
+                                  "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-lg transition-colors",
+                                  subtitleDisplayMode === mode
+                                    ? "text-blue-400 bg-blue-900/30"
+                                    : "text-gray-300 hover:bg-gray-800"
+                                )}
+                              >
+                                {label}
+                                {subtitleDisplayMode === mode && (
+                                  <CheckCircle2 className="w-4 h-4" />
+                                )}
+                              </button>
+                            ))}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700">
+                            <span className="text-sm font-semibold text-white">Captions</span>
+                            {isTranscribing && (
+                              <span className="flex items-center gap-1.5 text-xs text-blue-400">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                Transcribing
+                              </span>
                             )}
-                          >
-                            {label}
-                            {subtitleDisplayMode === mode && (
-                              <CheckCircle2 className="w-4 h-4" />
+                          </div>
+                          <div className="p-1">
+                            <button
+                              onClick={handleToggleSubtitles}
+                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-white hover:bg-gray-800 rounded-lg transition-colors"
+                            >
+                              <span>Subtitles</span>
+                              <span
+                                className={cn(
+                                  "relative w-9 h-5 rounded-full transition-colors",
+                                  showSubtitles ? "bg-blue-600" : "bg-gray-600"
+                                )}
+                              >
+                                <span
+                                  className={cn(
+                                    "absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all",
+                                    showSubtitles ? "left-[18px]" : "left-0.5"
+                                  )}
+                                />
+                              </span>
+                            </button>
+                            <button
+                              onClick={() => setCcMenuView("language")}
+                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+                            >
+                              <span>Language</span>
+                              <span className="flex items-center gap-1 text-gray-400">
+                                <span className="text-xs">{currentLanguageLabel}</span>
+                                <ChevronRight className="w-4 h-4" />
+                              </span>
+                            </button>
+                            <button
+                              onClick={() => setCcMenuView("mode")}
+                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+                            >
+                              <span>Caption Mode</span>
+                              <ChevronRight className="w-4 h-4" />
+                            </button>
+                            {transcriptionError && (
+                              <p className="px-3 py-2 text-xs text-red-400 break-all">{transcriptionError}</p>
                             )}
-                          </button>
-                        ))}
-                      </div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
