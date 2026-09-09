@@ -26,7 +26,6 @@ Thumbs.db
 
 # Tauri
 src-tauri/target/
-src-tauri/Cargo.lock
 # Machine-specific FFmpeg sidecar binary (see README)
 src-tauri/binaries/
 
