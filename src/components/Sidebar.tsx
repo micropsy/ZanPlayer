@@ -6,14 +6,12 @@ import {
   AlertCircle,
   Download,
   Settings as SettingsIcon,
-  PenLine,
   Trash2,
   List,
   FileText,
   FileVideo,
   Menu,
 } from "lucide-react";
-import appIcon from "../assets/icon.png";
 import { TauriService } from "../services/tauri";
 import { SettingsComponent } from "./Settings";
 import { cn } from "../utils/cn";
@@ -21,12 +19,7 @@ import type { SubtitleTrack } from "../types/subtitle";
 
 type Tab = "main" | "settings";
 
-interface SidebarProps {
-  editorOpen?: boolean;
-  onToggleEditor?: () => void;
-}
-
-export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) => {
+export const Sidebar = () => {
   const {
     setCurrentVideoUrl,
     subtitleTracks,
@@ -295,7 +288,7 @@ export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) =>
       className={cn(
         "w-96 border-r flex flex-col h-full relative",
         theme === "dark" 
-          ? "bg-gray-900 border-gray-700" 
+          ? "bg-zan-black border-gray-700" 
           : "bg-white border-gray-200"
       )}
       onDragOver={onDragOver}
@@ -304,7 +297,7 @@ export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) =>
     >
       {/* Drag & Drop Overlay */}
       {isDragging && (
-        <div className="absolute inset-0 z-50 bg-blue-500/20 border-4 border-dashed border-blue-500 flex items-center justify-center">
+        <div className="absolute inset-0 z-50 bg-zan-cyan/10 border-4 border-dashed border-zan-cyan flex items-center justify-center">
           <div className="text-center text-white">
             <FileVideo className="w-16 h-16 mx-auto mb-4" />
             <p className="text-xl font-semibold">Drop video or subtitle file</p>
@@ -319,11 +312,11 @@ export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) =>
         {/* App Logo */}
         <div className="flex items-center gap-3 px-4 py-3">
           <img 
-            src={appIcon} 
-            alt="Sub Player" 
+            src="/logo.png" 
+            alt="ZanPlayer" 
             className="w-10 h-10 rounded-lg"
           />
-          <span className="text-xl font-bold text-white">Sub Player</span>
+          <span className="text-xl font-bold text-white">ZanPlayer</span>
         </div>
         <button
           onClick={() => setActiveTab("main")}
@@ -331,8 +324,8 @@ export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) =>
             "flex-1 py-3 px-4 text-sm font-medium transition-colors",
             activeTab === "main"
               ? theme === "dark"
-                ? "bg-gray-800 text-white border-b-2 border-blue-500"
-                : "bg-gray-100 text-gray-900 border-b-2 border-blue-500"
+                ? "bg-zan-blue/15 text-white border-b-2 border-zan-cyan"
+                : "bg-gray-100 text-gray-900 border-b-2 border-zan-cyan"
               : theme === "dark"
                 ? "text-gray-500 hover:text-gray-300"
                 : "text-gray-500 hover:text-gray-700"
@@ -343,32 +336,14 @@ export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) =>
             Main
           </div>
         </button>
-        {hasTracks && onToggleEditor && (
-          <button
-            onClick={onToggleEditor}
-            title={editorOpen ? "Hide subtitle editor" : "Show subtitle editor"}
-            className={cn(
-              "p-3 transition-colors",
-              editorOpen
-                ? theme === "dark"
-                  ? "bg-gray-800 text-white border-b-2 border-blue-500"
-                  : "bg-gray-100 text-gray-900 border-b-2 border-blue-500"
-                : theme === "dark"
-                  ? "text-gray-500 hover:text-gray-300"
-                  : "text-gray-500 hover:text-gray-700"
-            )}
-          >
-            <PenLine className="w-4 h-4" />
-          </button>
-        )}
         <button
           onClick={() => setActiveTab("settings")}
           className={cn(
             "p-3 transition-colors",
             activeTab === "settings"
               ? theme === "dark"
-                ? "bg-gray-800 text-white border-b-2 border-blue-500"
-                : "bg-gray-100 text-gray-900 border-b-2 border-blue-500"
+                ? "bg-zan-blue/15 text-white border-b-2 border-zan-cyan"
+                : "bg-gray-100 text-gray-900 border-b-2 border-zan-cyan"
               : theme === "dark"
                 ? "text-gray-500 hover:text-gray-300"
                 : "text-gray-500 hover:text-gray-700"
@@ -381,7 +356,7 @@ export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) =>
           className={cn(
             "p-3 transition-colors",
             theme === "dark"
-              ? "hover:bg-gray-800 text-gray-400 hover:text-white"
+              ? "hover:bg-zan-blue/15 text-gray-400 hover:text-white"
               : "hover:bg-gray-100 text-gray-500 hover:text-gray-700"
           )}
         >
@@ -394,7 +369,7 @@ export const Sidebar = ({ editorOpen = false, onToggleEditor }: SidebarProps) =>
           <div className={cn(
             "p-6 border-b",
             theme === "dark"
-              ? "border-gray-700 bg-gradient-to-b from-gray-800 to-gray-900"
+              ? "border-gray-700 bg-gradient-to-b from-zan-deep to-zan-black"
               : "border-gray-200 bg-gradient-to-b from-gray-50 to-white"
           )}>
 

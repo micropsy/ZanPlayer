@@ -124,7 +124,7 @@ function App() {
           setCurrentVideo(null); // Clear any File object
           setCurrentVideoUrl(url);
           setCurrentVideoPath(filePath);
-          emit('subplayer:video-dropped');
+          emit('zanplayer:video-dropped');
         } catch (error) {
           console.error('Failed to load video/audio:', error);
         }
@@ -261,7 +261,7 @@ function App() {
     <div 
       ref={containerRef}
       className={`flex w-screen h-screen overflow-hidden ${
-        theme === 'dark' ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'
+        theme === 'dark' ? 'bg-zan-black text-white' : 'bg-gray-50 text-gray-900'
       }`}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -269,7 +269,7 @@ function App() {
     >
       {/* Drag & Drop Overlay */}
       {isDragging && (
-        <div className="absolute inset-0 z-50 bg-blue-500/20 border-4 border-dashed border-blue-500 flex items-center justify-center">
+        <div className="absolute inset-0 z-50 bg-zan-cyan/10 border-4 border-dashed border-zan-cyan flex items-center justify-center">
           <div className="text-center text-white">
             <FileVideo className="w-16 h-16 mx-auto mb-4" />
             <p className="text-2xl font-semibold">Drop video or subtitle file</p>
@@ -277,26 +277,21 @@ function App() {
         </div>
       )}
 
-      {sidebarVisible && (
-        <Sidebar
-          editorOpen={editorOpen}
-          onToggleEditor={() => setEditorOpen(v => !v)}
-        />
-      )}
+      {sidebarVisible && <Sidebar />}
       <div className="flex-1 relative">
         {!sidebarVisible && (
           <button
             onClick={() => setSidebarVisible(true)}
             className={`absolute top-4 left-4 z-40 p-2 rounded-lg ${
               theme === 'dark'
-                ? 'bg-gray-800 hover:bg-gray-700 text-white'
+                ? 'bg-zan-black/80 hover:bg-zan-deep text-white'
                 : 'bg-white hover:bg-gray-100 text-gray-900'
             } shadow-lg`}
           >
             <Menu className="w-6 h-6" />
           </button>
         )}
-        <VideoPlayer />
+        <VideoPlayer onEditSubtitles={() => setEditorOpen(true)} />
       </div>
       {editorOpen && <SubtitleEditor onClose={() => setEditorOpen(false)} />}
     </div>

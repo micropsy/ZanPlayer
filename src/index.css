@@ -1,1 +1,9 @@
 @import "tailwindcss";
+
+@theme {
+  --color-zan-cyan: #61d0d4;
+  --color-zan-blue: #1954a6;
+  --color-zan-deep: #0b3c73;
+  --color-zan-black: #0a0d14;
+  --color-zan-silver: #c0c0c0;
+}

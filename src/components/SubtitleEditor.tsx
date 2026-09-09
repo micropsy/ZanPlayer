@@ -38,7 +38,7 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
   const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
 
   const inputCls = cn(
-    "w-[76px] px-2 py-1 border rounded-md text-right font-mono text-xs focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30",
+    "w-[76px] px-2 py-1 border rounded-md text-right font-mono text-xs focus:outline-none focus:border-zan-cyan focus:ring-1 focus:ring-zan-cyan/30",
     theme === "dark"
       ? "bg-gray-800 border-gray-700 text-white"
       : "bg-white border-gray-300 text-gray-900"
@@ -46,7 +46,7 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
 
   const textareaCls = (accent?: string) =>
     cn(
-      "w-full px-2 py-1.5 border rounded-md text-sm focus:outline-none focus:border-blue-500 resize-none overflow-y-auto min-h-[2.5rem] max-h-[120px]",
+      "w-full px-2 py-1.5 border rounded-md text-sm focus:outline-none focus:border-zan-cyan resize-none overflow-y-auto min-h-[2.5rem] max-h-[120px]",
       accent,
       theme === "dark"
         ? "bg-gray-800 border-gray-700 text-white"
@@ -57,7 +57,7 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
     <aside
       className={cn(
         "w-[30%] min-w-[340px] max-w-[440px] h-full flex flex-col border-l",
-        theme === "dark" ? "border-gray-700 bg-gray-900" : "border-gray-200 bg-white"
+        theme === "dark" ? "border-gray-700 bg-zan-black" : "border-gray-200 bg-white"
       )}
     >
       <div
@@ -98,8 +98,8 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
               className={cn(
                 "rounded-lg border p-2 transition-all cursor-pointer",
                 theme === "dark"
-                  ? "bg-gray-800 border-gray-700 hover:border-blue-500 hover:bg-gray-750"
-                  : "bg-white border-gray-200 hover:border-blue-500 hover:bg-gray-50"
+                  ? "bg-gray-800 border-gray-700 hover:border-zan-cyan hover:bg-zan-blue/10"
+                  : "bg-white border-gray-200 hover:border-zan-cyan hover:bg-gray-50"
               )}
             >
               <div
@@ -197,8 +197,8 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
               className={cn(
                 "rounded-lg border p-2 transition-all cursor-pointer",
                 theme === "dark"
-                  ? "bg-gray-800 border-gray-700 hover:border-blue-500 hover:bg-gray-750"
-                  : "bg-white border-gray-200 hover:border-blue-500 hover:bg-gray-50"
+                  ? "bg-gray-800 border-gray-700 hover:border-zan-cyan hover:bg-zan-blue/10"
+                  : "bg-white border-gray-200 hover:border-zan-cyan hover:bg-gray-50"
               )}
             >
               <div

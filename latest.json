@@ -5,19 +5,19 @@
   "platforms": {
     "darwin-x86_64": {
       "signature": "",
-      "url": "https://github.com/micropsy/subplayer/releases/download/v0.1.0/subplayer_x86_64.app.tar.gz"
+      "url": "https://github.com/micropsy/ZanPlayer/releases/download/v0.1.0/ZanPlayer_x86_64.app.tar.gz"
     },
     "darwin-aarch64": {
       "signature": "",
-      "url": "https://github.com/micropsy/subplayer/releases/download/v0.1.0/subplayer_aarch64.app.tar.gz"
+      "url": "https://github.com/micropsy/ZanPlayer/releases/download/v0.1.0/ZanPlayer_aarch64.app.tar.gz"
     },
     "linux-x86_64": {
       "signature": "",
-      "url": "https://github.com/micropsy/subplayer/releases/download/v0.1.0/subplayer_x86_64.AppImage.tar.gz"
+      "url": "https://github.com/micropsy/ZanPlayer/releases/download/v0.1.0/ZanPlayer_x86_64.AppImage.tar.gz"
     },
     "windows-x86_64": {
       "signature": "",
-      "url": "https://github.com/micropsy/subplayer/releases/download/v0.1.0/subplayer_x64_en-US.msi.zip"
+      "url": "https://github.com/micropsy/ZanPlayer/releases/download/v0.1.0/ZanPlayer_x64_en-US.msi.zip"
     }
   }
 }

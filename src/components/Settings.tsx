@@ -74,20 +74,44 @@ const systemFonts = [
   "sans-serif",
 ];
 
-const selectClass = (theme: string) =>
-  `w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/30 text-sm ${
-    theme === "dark"
-      ? "bg-gray-800 border-gray-600 text-white"
-      : "bg-white border-gray-300 text-gray-900"
-  }`;
+const card = (theme: string) =>
+  theme === "dark" ? "bg-zan-black/40 border-gray-700/50" : "bg-white border-gray-200";
 
-const trackBarClass = (theme: string) =>
-  theme === "dark" ? "bg-gray-600" : "bg-gray-200";
+const rowDividers = (theme: string) => (theme === "dark" ? "divide-gray-700/50" : "divide-gray-200");
 
-const ghostClass = (theme: string) =>
+const labelClass = (theme: string) =>
+  theme === "dark" ? "text-gray-400" : "text-gray-500";
+
+const valueClass = (theme: string) =>
+  theme === "dark" ? "text-white" : "text-gray-900";
+
+const controlClass = (theme: string) =>
   theme === "dark"
-    ? "border-gray-600 text-gray-300 hover:bg-gray-700"
-    : "border-gray-300 text-gray-600 hover:bg-gray-100";
+    ? "bg-zan-black/60 border-gray-700/60 text-gray-100"
+    : "bg-white border-gray-300 text-gray-900";
+
+const trackClass = (theme: string) => (theme === "dark" ? "bg-gray-700" : "bg-gray-200");
+
+const Toggle = ({
+  on,
+  onClick,
+}: {
+  on: boolean;
+  onClick: () => void;
+}) => (
+  <button
+    onClick={onClick}
+    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+      on ? "bg-zan-cyan" : "bg-gray-600"
+    }`}
+  >
+    <span
+      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+        on ? "translate-x-6" : "translate-x-1"
+      }`}
+    />
+  </button>
+);
 
 export const SettingsComponent = () => {
   const {
@@ -144,127 +168,116 @@ export const SettingsComponent = () => {
   };
 
   const currentModelName = whisperModels.find(m => m.id === whisperModel)?.name || whisperModel;
+  const inputClass = `w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`;
+  const selectFieldClass = `px-2.5 py-1.5 rounded-lg text-sm border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`;
 
   return (
-    <div className="p-6 space-y-6 overflow-y-auto">
+    <div className="p-8 space-y-8 overflow-y-auto">
       <div className="flex items-center gap-2">
         <SettingsIcon className={`w-5 h-5 ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`} />
-        <h2 className={`text-lg font-semibold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+        <h2 className={`text-lg font-semibold ${valueClass(theme)}`}>
           Settings
         </h2>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-        <div className="space-y-2">
-          <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-            Theme
-          </label>
-          <select
-            value={theme}
-            onChange={(e) => setTheme(e.target.value as "dark" | "light")}
-            className={selectClass(theme)}
-          >
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
-          </select>
-        </div>
+      {/* Theme */}
+      <section className="space-y-2">
+        <label className={`block text-sm font-medium ${labelClass(theme)}`}>
+          Theme
+        </label>
+        <select
+          value={theme}
+          onChange={(e) => setTheme(e.target.value as "dark" | "light")}
+          className={inputClass}
+        >
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </section>
 
-        <div className="space-y-2">
-          <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-            Updates
-          </label>
-          {isTauri() ? (
-            <div className={`p-3 rounded-lg border ${
-              theme === 'dark' ? 'bg-gray-800/60 border-gray-600' : 'bg-white border-gray-300'
-            }`}>
-              {updateStatus === 'idle' && (
+      {/* Updates */}
+      <section className="space-y-2">
+        <label className={`block text-sm font-medium ${labelClass(theme)}`}>
+          Updates
+        </label>
+        {isTauri() ? (
+          <>
+            {updateStatus === 'idle' && (
+              <button
+                onClick={checkForUpdates}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Check for Updates
+              </button>
+            )}
+
+            {updateStatus === 'checking' && (
+              <div className="flex items-center justify-center gap-2 py-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>Checking...</span>
+              </div>
+            )}
+
+            {updateStatus === 'not_available' && (
+              <div className="flex items-center justify-center gap-2 py-2">
+                <CheckCircle2 className="w-4 h-4 text-green-400" />
+                <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>You're up to date!</span>
+              </div>
+            )}
+
+            {updateStatus === 'available' && (
+              <div className="flex items-center justify-between gap-3 py-1">
+                <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
+                  New version available!
+                </span>
                 <button
-                  onClick={checkForUpdates}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm transition-all"
+                  onClick={installUpdate}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm transition-all"
                 >
-                  <RefreshCw className="w-4 h-4" />
-                  Check for Updates
+                  Install Update
                 </button>
-              )}
+              </div>
+            )}
 
-              {updateStatus === 'checking' && (
-                <div className="flex items-center justify-center gap-2 py-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>Checking...</span>
-                </div>
-              )}
+            {updateStatus === 'installing' && (
+              <div className="flex items-center justify-center gap-2 py-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>Installing...</span>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className={`text-xs ${labelClass(theme)}`}>
+            Update feature is only available in the desktop app.
+          </p>
+        )}
+      </section>
 
-              {updateStatus === 'not_available' && (
-                <div className="space-y-1">
-                  <div className="flex items-center justify-center gap-2 py-2">
-                    <CheckCircle2 className="w-4 h-4 text-green-400" />
-                    <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>You're up to date!</span>
-                  </div>
-                  <button
-                    onClick={checkForUpdates}
-                    className={`w-full text-left px-2 text-xs ${
-                      theme === 'dark' ? 'text-gray-400 hover:text-gray-300' : 'text-gray-600 hover:text-gray-700'
-                    }`}
-                  >
-                    Check again
-                  </button>
-                </div>
-              )}
-
-              {updateStatus === 'available' && (
-                <div className="space-y-2">
-                  <div className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
-                    New version available!
-                  </div>
-                  <button
-                    onClick={installUpdate}
-                    className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm transition-all"
-                  >
-                    Install Update
-                  </button>
-                </div>
-              )}
-
-              {updateStatus === 'installing' && (
-                <div className="flex items-center justify-center gap-2 py-2">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>Installing...</span>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className={`p-3 rounded-lg border ${
-              theme === 'dark' ? 'bg-gray-800/60 border-gray-600' : 'bg-white border-gray-300'
-            }`}>
-              <p className={`text-xs ${theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>
-                Update feature is only available in the desktop app.
-              </p>
-            </div>
-          )}
+      {/* Models */}
+      <section className="space-y-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <h3 className={`text-sm font-semibold ${valueClass(theme)}`}>
+              Models
+            </h3>
+            <Info className={`w-4 h-4 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`} />
+          </div>
+          <p className={`text-xs ${labelClass(theme)}`}>
+            Select a model to use for creating subtitles. Higher quality models provide better accuracy for more difficult audio.
+          </p>
         </div>
-      </div>
 
-      <div className="space-y-4">
-        <div className="flex items-center gap-2">
-          <h3 className={`text-sm font-semibold ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
-            Models
-          </h3>
-          <Info className={`w-4 h-4 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`} />
-        </div>
-        <p className={`text-xs ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>
-          Select a model to use for creating subtitles. Higher quality models provide better accuracy for more difficult audio.
-        </p>
-
-        <div className="flex items-center justify-between px-3 py-2 rounded-lg border border-dashed">
-          <span className={`text-xs font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
+        <div className={`flex items-center justify-between px-4 py-2.5 rounded-xl border ${card(theme)}`}>
+          <span className={`text-xs font-medium ${labelClass(theme)}`}>
             Current Model
           </span>
-          <span className={`text-xs font-semibold ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+          <span className={`text-xs font-semibold ${valueClass(theme)}`}>
             {currentModelName}
           </span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="flex flex-col gap-4">
           {whisperModels.map((model) => {
             const isDownloaded = downloadedModels.includes(model.id);
             const isDownloading = downloadingModels.has(model.id);
@@ -274,66 +287,62 @@ export const SettingsComponent = () => {
             return (
               <div
                 key={model.id}
-                className={`p-3.5 rounded-xl border transition-all ${
+                className={`p-4 rounded-xl border transition-all ${card(theme)} ${
                   isSelected
                     ? theme === 'dark'
-                      ? 'bg-blue-900/20 border-blue-500'
-                      : 'bg-blue-50 border-blue-500'
+                      ? "border-zan-cyan/60 bg-zan-cyan/5"
+                      : "border-zan-cyan bg-zan-cyan/10"
                     : theme === 'dark'
-                      ? 'bg-gray-800/60 border-gray-700 hover:border-gray-600'
-                      : 'bg-white border-gray-200 hover:border-gray-300'
+                      ? "hover:border-gray-600"
+                      : "hover:border-gray-300"
                 }`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <h5 className={`text-sm font-medium truncate ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex items-center flex-wrap gap-2">
+                    <span className={`text-base font-semibold ${valueClass(theme)}`}>
                       {model.name}
-                    </h5>
+                    </span>
                     {model.isPlus && (
-                      <span className="shrink-0 px-1.5 py-0.5 bg-blue-500/20 text-blue-400 text-[10px] font-semibold rounded-full">
+                      <span className="px-1.5 py-0.5 bg-zan-cyan/15 text-zan-cyan text-[10px] font-semibold rounded-full">
                         Plus
                       </span>
                     )}
                     {isDownloaded && (
-                      <span className={`shrink-0 px-1.5 py-0.5 text-[10px] font-semibold rounded-full border ${
+                      <span className={`px-1.5 py-0.5 text-[10px] font-semibold rounded-full ${
                         isSelected
-                          ? 'border-blue-500/40 text-blue-400'
-                          : 'border-green-500/40 text-green-400'
+                          ? "bg-zan-cyan/15 text-zan-cyan"
+                          : "bg-green-500/10 text-green-400"
                       }`}>
                         {isSelected ? "Active" : "Loaded"}
                       </span>
                     )}
-                    {isSelected && <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />}
+                    {isSelected && <CheckCircle2 className="w-4 h-4 text-green-400" />}
                   </div>
-                  <span className={`text-[11px] shrink-0 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>
+                  <span className={`text-xs ${labelClass(theme)} whitespace-nowrap mt-1`}>
                     {model.size}
                   </span>
                 </div>
 
-                <p className={`text-[11px] mt-1 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-500'}`}>
+                <p className={`text-[11px] mt-1 ${labelClass(theme)}`}>
                   {model.description}
                 </p>
 
-                <div className="mt-2 grid grid-cols-2 gap-3">
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-[10px] w-11 shrink-0 ${theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>
-                      Accuracy
-                    </span>
-                    <div className={`flex-1 h-1.5 rounded-full overflow-hidden ${trackBarClass(theme)}`}>
-                      <div className="h-full bg-blue-500" style={{ width: `${model.accuracy}%` }} />
+                <div className="my-3 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs text-gray-400">
+                    <span className="w-16">Accuracy</span>
+                    <div className={`flex-1 h-1.5 bg-gray-700 rounded-full ml-2 overflow-hidden`}>
+                      <div className="h-full bg-zan-cyan rounded-full" style={{ width: `${model.accuracy}%` }} />
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className={`text-[10px] w-11 shrink-0 ${theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}`}>
-                      Speed
-                    </span>
-                    <div className={`flex-1 h-1.5 rounded-full overflow-hidden ${trackBarClass(theme)}`}>
-                      <div className="h-full bg-blue-500" style={{ width: `${model.speed}%` }} />
+                  <div className="flex items-center justify-between text-xs text-gray-400">
+                    <span className="w-16">Speed</span>
+                    <div className={`flex-1 h-1.5 bg-gray-700 rounded-full ml-2 overflow-hidden`}>
+                      <div className="h-full bg-zan-cyan rounded-full" style={{ width: `${model.speed}%` }} />
                     </div>
                   </div>
                 </div>
 
-                <div className="mt-2.5 flex items-center justify-end gap-2">
+                <div className="mt-5 flex items-center justify-end gap-3">
                   {!isDownloaded && !progress?.error && (
                     <button
                       onClick={(e) => {
@@ -345,7 +354,7 @@ export const SettingsComponent = () => {
                         isTauri()
                           ? isDownloading
                             ? 'bg-gray-600 cursor-not-allowed'
-                            : 'bg-blue-600 hover:bg-blue-700'
+                            : 'bg-zan-blue hover:bg-zan-deep'
                           : 'bg-gray-400 cursor-not-allowed'
                       }`}
                     >
@@ -368,10 +377,10 @@ export const SettingsComponent = () => {
                           e.stopPropagation();
                           setWhisperModel(model.id);
                         }}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                        className={`px-4 py-1.5 rounded-lg text-xs font-medium border transition-all ${
                           isSelected
-                            ? "border-green-500/60 text-green-500"
-                            : `border-green-500/40 text-green-500 hover:bg-green-500/10`
+                            ? "bg-zan-cyan/20 text-zan-cyan border-zan-cyan/30"
+                            : "bg-zan-cyan/10 text-zan-cyan border-zan-cyan/30 hover:bg-zan-cyan/15"
                         }`}
                       >
                         Use
@@ -401,7 +410,11 @@ export const SettingsComponent = () => {
                           e.stopPropagation();
                           if (isTauri()) downloadModel(model.id);
                         }}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 border ${ghostClass(theme)}`}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 border transition-all ${
+                          theme === 'dark'
+                            ? 'border-gray-700 text-gray-300 hover:bg-gray-700/60'
+                            : 'border-gray-300 text-gray-600 hover:bg-gray-100'
+                        }`}
                       >
                         <RefreshCw className="w-3 h-3 text-red-400" />
                         Retry
@@ -417,17 +430,17 @@ export const SettingsComponent = () => {
 
                 {progress && !progress.error && (
                   <div className="mt-2 space-y-1">
-                    <div className={`h-1.5 rounded-full overflow-hidden ${trackBarClass(theme)}`}>
+                    <div className={`h-1 rounded-full overflow-hidden ${trackClass(theme)}`}>
                       <div
-                        className="h-full bg-blue-500 transition-all duration-300"
+                        className="h-full bg-zan-cyan transition-all duration-300"
                         style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
                       />
                     </div>
                     <div className="flex items-center justify-between text-[10px]">
-                      <span className={theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}>
+                      <span className={labelClass(theme)}>
                         {progress.percent.toFixed(1)}%
                       </span>
-                      <span className={theme === 'dark' ? 'text-gray-400' : 'text-gray-500'}>
+                      <span className={labelClass(theme)}>
                         {progress.speedMBps.toFixed(1)} MB/s · ETA {progress.etaSeconds}s
                       </span>
                     </div>
@@ -473,14 +486,11 @@ export const SettingsComponent = () => {
             );
           })}
         </div>
-      </div>
+      </section>
 
-      <div className={`space-y-4 pt-4 border-t ${
-        theme === 'dark' ? 'border-gray-700' : 'border-gray-200'
-      }`}>
-        <h3 className={`text-sm font-semibold flex items-center gap-2 ${
-          theme === 'dark' ? 'text-gray-300' : 'text-gray-700'
-        }`}>
+      {/* Subtitle Style */}
+      <section className="space-y-4">
+        <h3 className={`text-sm font-semibold flex items-center gap-2 ${valueClass(theme)}`}>
           <Languages className="w-4 h-4" />
           Subtitle Style
         </h3>
@@ -488,7 +498,7 @@ export const SettingsComponent = () => {
         {/* Subtitle Preview Box */}
         <div className={`relative rounded-xl overflow-hidden border ${
           theme === 'dark'
-            ? 'bg-gradient-to-br from-gray-900 to-gray-800 border-gray-700'
+            ? 'bg-gradient-to-br from-zan-deep to-zan-black border-gray-700'
             : 'bg-gradient-to-br from-gray-100 to-gray-200 border-gray-300'
         }`}>
           <div className="absolute inset-0 flex items-center justify-center">
@@ -514,15 +524,17 @@ export const SettingsComponent = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
-          <div className="col-span-2 space-y-2">
-            <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-              Font Family
-            </label>
+        {/* Grouped settings list */}
+        <div className={`rounded-xl border overflow-hidden divide-y ${card(theme)} ${rowDividers(theme)}`}>
+          {/* Font Family */}
+          <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+            <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
+              Font
+            </span>
             <select
               value={subtitleStyle.fontName}
               onChange={(e) => setSubtitleStyle({ fontName: e.target.value })}
-              className={selectClass(theme)}
+              className={`w-48 ${selectFieldClass}`}
             >
               {systemFonts.map((font) => (
                 <option key={font} value={font} style={{ fontFamily: font }}>
@@ -532,28 +544,33 @@ export const SettingsComponent = () => {
             </select>
           </div>
 
-          <div className="space-y-2">
-            <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-              Font Size: {subtitleStyle.fontSize}px
-            </label>
-            <input
-              type="range"
-              min="12"
-              max="72"
-              value={subtitleStyle.fontSize}
-              onChange={(e) => setSubtitleStyle({ fontSize: parseInt(e.target.value) })}
-              className={`w-full h-1.5 rounded-lg appearance-none cursor-pointer accent-blue-500 ${
-                theme === 'dark' ? 'bg-gray-600' : 'bg-gray-200'
-              }`}
-            />
+          {/* Font Size */}
+          <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+            <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
+              Font Size
+            </span>
+            <div className="flex items-center gap-3 flex-1 max-w-[16rem]">
+              <input
+                type="range"
+                min="12"
+                max="72"
+                value={subtitleStyle.fontSize}
+                onChange={(e) => setSubtitleStyle({ fontSize: parseInt(e.target.value) })}
+                className={`appearance-none w-full h-1 rounded-full cursor-pointer accent-zan-cyan ${trackClass(theme)}`}
+              />
+              <span className={`w-10 text-right text-xs font-mono ${valueClass(theme)}`}>
+                {subtitleStyle.fontSize}px
+              </span>
+            </div>
           </div>
 
-          <div className="space-y-2">
-            <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
+          {/* Text Color */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Text Color
-            </label>
+            </span>
             <div className="flex items-center gap-2">
-              <span className={`relative block w-12 h-9 rounded-lg border shrink-0 overflow-hidden ${
+              <span className={`relative h-8 w-10 rounded-lg border shrink-0 overflow-hidden ${
                 theme === 'dark' ? 'border-gray-600' : 'border-gray-300'
               }`}>
                 <span className="absolute inset-0" style={{ background: subtitleStyle.primaryColor }} />
@@ -564,20 +581,23 @@ export const SettingsComponent = () => {
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
               </span>
-              <span className={`font-mono text-[11px] px-2 py-1 rounded-md ${
-                theme === 'dark' ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'
-              }`}>
-                {subtitleStyle.primaryColor}
-              </span>
+              <input
+                type="text"
+                value={subtitleStyle.primaryColor}
+                onChange={(e) => setSubtitleStyle({ primaryColor: e.target.value })}
+                className={`w-24 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
+                spellCheck={false}
+              />
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
+          {/* Outline Color */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Outline Color
-            </label>
+            </span>
             <div className="flex items-center gap-2">
-              <span className={`relative block w-12 h-9 rounded-lg border shrink-0 overflow-hidden ${
+              <span className={`relative h-8 w-10 rounded-lg border shrink-0 overflow-hidden ${
                 theme === 'dark' ? 'border-gray-600' : 'border-gray-300'
               }`}>
                 <span className="absolute inset-0" style={{ background: subtitleStyle.outlineColor }} />
@@ -588,20 +608,23 @@ export const SettingsComponent = () => {
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
               </span>
-              <span className={`font-mono text-[11px] px-2 py-1 rounded-md ${
-                theme === 'dark' ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'
-              }`}>
-                {subtitleStyle.outlineColor}
-              </span>
+              <input
+                type="text"
+                value={subtitleStyle.outlineColor}
+                onChange={(e) => setSubtitleStyle({ outlineColor: e.target.value })}
+                className={`w-24 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
+                spellCheck={false}
+              />
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-              Background Color
-            </label>
+          {/* Background Color */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
+              Background
+            </span>
             <div className="flex items-center gap-2">
-              <span className={`relative block w-12 h-9 rounded-lg border shrink-0 overflow-hidden ${
+              <span className={`relative h-8 w-10 rounded-lg border shrink-0 overflow-hidden ${
                 theme === 'dark' ? 'border-gray-600' : 'border-gray-300'
               }`}>
                 <span className="absolute inset-0" style={{ background: subtitleStyle.backColor }} />
@@ -615,79 +638,64 @@ export const SettingsComponent = () => {
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
               </span>
-              <span className={`font-mono text-[11px] px-2 py-1 rounded-md ${
-                theme === 'dark' ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'
-              }`}>
-                {subtitleStyle.backColor}
-              </span>
+              <input
+                type="text"
+                value={subtitleStyle.backColor}
+                onChange={(e) => setSubtitleStyle({ backColor: e.target.value })}
+                className={`w-24 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
+                spellCheck={false}
+              />
             </div>
           </div>
 
-          <div className="space-y-2">
-            <div className="flex gap-4">
-              <div className="flex items-center justify-between flex-1">
-                <label className={`text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-                  Bold
-                </label>
-                <button
-                  onClick={() => setSubtitleStyle({ bold: !subtitleStyle.bold })}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                    subtitleStyle.bold ? "bg-blue-600" : theme === 'dark' ? "bg-gray-600" : "bg-gray-300"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                      subtitleStyle.bold ? "translate-x-5" : "translate-x-1"
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between flex-1">
-                <label className={`text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
-                  Italic
-                </label>
-                <button
-                  onClick={() => setSubtitleStyle({ italic: !subtitleStyle.italic })}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                    subtitleStyle.italic ? "bg-blue-600" : theme === 'dark' ? "bg-gray-600" : "bg-gray-300"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
-                      subtitleStyle.italic ? "translate-x-5" : "translate-x-1"
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
+          {/* Bold */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
+              Bold
+            </span>
+            <Toggle
+              on={subtitleStyle.bold}
+              onClick={() => setSubtitleStyle({ bold: !subtitleStyle.bold })}
+            />
           </div>
 
-          <div className="col-span-2 space-y-2">
-            <label className={`block text-sm font-medium ${theme === 'dark' ? 'text-gray-400' : 'text-gray-600'}`}>
+          {/* Italic */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
+              Italic
+            </span>
+            <Toggle
+              on={subtitleStyle.italic}
+              onClick={() => setSubtitleStyle({ italic: !subtitleStyle.italic })}
+            />
+          </div>
+
+          {/* Position */}
+          <div className="flex items-center justify-between px-4 py-3">
+            <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Subtitle Position
-            </label>
-            <div className="flex gap-2">
+            </span>
+            <div className={`flex p-0.5 rounded-lg border ${controlClass(theme)}`}>
               <button
                 onClick={() => setSubtitleStyle({ alignment: "top" })}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm border transition-all ${
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                   subtitleStyle.alignment === "top"
-                    ? "bg-blue-600 border-blue-500 text-white"
+                    ? "bg-zan-cyan/15 text-zan-cyan"
                     : theme === 'dark'
-                      ? "bg-gray-800/60 border-gray-600 text-gray-400 hover:border-gray-500"
-                      : "bg-white border-gray-300 text-gray-600 hover:border-gray-400"
+                      ? "text-gray-400 hover:text-white"
+                      : "text-gray-500 hover:text-gray-900"
                 }`}
               >
                 Top
               </button>
               <button
                 onClick={() => setSubtitleStyle({ alignment: "bottom" })}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm border transition-all ${
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
                   subtitleStyle.alignment === "bottom"
-                    ? "bg-blue-600 border-blue-500 text-white"
+                    ? "bg-zan-cyan/15 text-zan-cyan"
                     : theme === 'dark'
-                      ? "bg-gray-800/60 border-gray-600 text-gray-400 hover:border-gray-500"
-                      : "bg-white border-gray-300 text-gray-600 hover:border-gray-400"
+                      ? "text-gray-400 hover:text-white"
+                      : "text-gray-500 hover:text-gray-900"
                 }`}
               >
                 Bottom
@@ -695,7 +703,7 @@ export const SettingsComponent = () => {
             </div>
           </div>
         </div>
-      </div>
+      </section>
     </div>
   );
 };

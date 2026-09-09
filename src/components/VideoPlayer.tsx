@@ -8,8 +8,6 @@ import {
   VolumeX,
   Maximize,
   Minimize,
-  Captions,
-  CaptionsOff,
   SkipForward,
   SkipBack,
   FileVideo,
@@ -17,6 +15,7 @@ import {
   Loader2,
   ChevronRight,
   ChevronLeft,
+  Pen,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { TauriService, isTauri } from "../services/tauri";
@@ -40,7 +39,7 @@ const SUBTITLE_LANGUAGES = [
   { code: "ar", name: "Arabic" },
 ];
 
-export const VideoPlayer = () => {
+export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [showControls, setShowControls] = useState(true);
   const [volume, setVolume] = useState(1);
@@ -354,7 +353,7 @@ export const VideoPlayer = () => {
     let unlisten: () => void;
     const setupDropListener = async () => {
       if (!isTauri()) return;
-      unlisten = await listen("subplayer:video-dropped", () => {
+      unlisten = await listen("zanplayer:video-dropped", () => {
         pendingPlayRef.current = true;
         const s = useAppStore.getState();
         if (s.subtitleTracks.length === 0 && !s.isTranscribing && s.currentVideoPath) {
@@ -402,9 +401,9 @@ export const VideoPlayer = () => {
           
           {/* Audio-only visualizer placeholder */}
           {videoRef.current && videoRef.current.videoWidth === 0 && videoRef.current.videoHeight === 0 && (
-            <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-900 to-gray-800">
+            <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-zan-deep to-zan-black">
               <div className="flex flex-col items-center gap-6">
-                <div className="w-32 h-32 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-3xl shadow-2xl flex items-center justify-center">
+                <div className="w-32 h-32 bg-gradient-to-br from-zan-blue to-zan-deep rounded-3xl shadow-2xl flex items-center justify-center">
                   <FileVideo className="w-16 h-16 text-white" />
                 </div>
                 <div className="text-center">
@@ -476,7 +475,7 @@ export const VideoPlayer = () => {
           {/* Transcribing Indicator */}
           {isTranscribing && (
             <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 bg-black/70 backdrop-blur rounded-full border border-gray-700 shadow-xl">
-              <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+              <Loader2 className="w-4 h-4 animate-spin text-zan-cyan" />
               <span className="text-sm text-white">Transcribing audio...</span>
             </div>
           )}
@@ -496,7 +495,7 @@ export const VideoPlayer = () => {
                 max={videoRef.current?.duration || 100}
                 value={videoRef.current?.currentTime || 0}
                 onChange={handleSeek}
-                className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-zan-cyan"
               />
               <div className="flex justify-between text-xs text-gray-300 mt-1">
                 <span>{formatTime(videoRef.current?.currentTime || 0)}</span>
@@ -509,7 +508,7 @@ export const VideoPlayer = () => {
               <div className="flex items-center gap-4">
                 <button
                   onClick={togglePlay}
-                  className="text-white hover:text-blue-400 transition-colors"
+                  className="text-white hover:text-zan-cyan transition-colors"
                 >
                   {isPlaying ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8" />}
                 </button>
@@ -517,14 +516,14 @@ export const VideoPlayer = () => {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => skipBackward(5)}
-                    className="text-white hover:text-blue-400 transition-colors"
+                    className="text-white hover:text-zan-cyan transition-colors"
                     title="Back 5 seconds"
                   >
                     <SkipBack className="w-6 h-6" />
                   </button>
                   <button
                     onClick={() => skipForward(5)}
-                    className="text-white hover:text-blue-400 transition-colors"
+                    className="text-white hover:text-zan-cyan transition-colors"
                     title="Forward 5 seconds"
                   >
                     <SkipForward className="w-6 h-6" />
@@ -532,7 +531,7 @@ export const VideoPlayer = () => {
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <button onClick={toggleMute} className="text-white hover:text-blue-400 transition-colors">
+                  <button onClick={toggleMute} className="text-white hover:text-zan-cyan transition-colors">
                     {isMuted || volume === 0 ? <VolumeX className="w-6 h-6" /> : <Volume2 className="w-6 h-6" />}
                   </button>
                   <input
@@ -542,7 +541,7 @@ export const VideoPlayer = () => {
                     step="0.01"
                     value={isMuted ? 0 : volume}
                     onChange={handleVolumeChange}
-                    className="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                    className="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-zan-cyan"
                   />
                 </div>
               </div>
@@ -555,22 +554,24 @@ export const VideoPlayer = () => {
                       if (showCCMenu) setCcMenuView("root");
                     }}
                     className={cn(
-                      "transition-colors",
-                      showSubtitles ? "text-blue-400 hover:text-blue-300" : "text-white hover:text-blue-400"
+                      "flex items-center justify-center py-0.5 px-1 rounded-[4px] border transition-colors",
+                      showSubtitles
+                        ? "text-zan-cyan border-zan-cyan/70 hover:bg-zan-cyan/10"
+                        : "text-white/80 border-white/70 hover:text-zan-cyan hover:border-zan-cyan/70"
                     )}
                     title={showSubtitles ? "Subtitle Settings" : "Show Subtitles"}
                   >
-                    {showSubtitles ? <Captions className="w-6 h-6" /> : <CaptionsOff className="w-6 h-6" />}
+                    <span className="text-[11px] font-bold tracking-widest leading-none">CC</span>
                   </button>
                   
                   {showCCMenu && (
-                    <div className="absolute bottom-full right-0 mb-3 bg-gray-900/95 backdrop-blur rounded-xl shadow-2xl border border-gray-700 min-w-[220px] overflow-hidden">
+                    <div className="absolute bottom-full right-0 mb-3 bg-zan-black/95 backdrop-blur rounded-xl shadow-2xl border border-gray-700 min-w-[220px] overflow-hidden">
                       {ccMenuView === "language" ? (
                         <>
                           <div className="flex items-center px-2 py-2 border-b border-gray-700">
                             <button
                               onClick={() => setCcMenuView("root")}
-                              className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                              className="p-1.5 text-gray-400 hover:text-white hover:bg-zan-blue/15 rounded-lg transition-colors"
                             >
                               <ChevronLeft className="w-4 h-4" />
                             </button>
@@ -590,8 +591,8 @@ export const VideoPlayer = () => {
                                 className={cn(
                                   "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-lg transition-colors",
                                   targetLanguage === lang.code
-                                    ? "text-blue-400 bg-blue-900/30"
-                                    : "text-gray-300 hover:bg-gray-800"
+                                    ? "text-zan-cyan bg-zan-blue/25"
+                                    : "text-gray-300 hover:bg-zan-blue/15"
                                 )}
                               >
                                 {lang.name}
@@ -605,7 +606,7 @@ export const VideoPlayer = () => {
                           <div className="flex items-center px-2 py-2 border-b border-gray-700">
                             <button
                               onClick={() => setCcMenuView("root")}
-                              className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                              className="p-1.5 text-gray-400 hover:text-white hover:bg-zan-blue/15 rounded-lg transition-colors"
                             >
                               <ChevronLeft className="w-4 h-4" />
                             </button>
@@ -626,8 +627,8 @@ export const VideoPlayer = () => {
                                 className={cn(
                                   "w-full flex items-center justify-between gap-3 px-3 py-2 text-sm rounded-lg transition-colors",
                                   subtitleDisplayMode === mode
-                                    ? "text-blue-400 bg-blue-900/30"
-                                    : "text-gray-300 hover:bg-gray-800"
+                                    ? "text-zan-cyan bg-zan-blue/25"
+                                    : "text-gray-300 hover:bg-zan-blue/15"
                                 )}
                               >
                                 {label}
@@ -643,7 +644,7 @@ export const VideoPlayer = () => {
                           <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700">
                             <span className="text-sm font-semibold text-white">Captions</span>
                             {isTranscribing && (
-                              <span className="flex items-center gap-1.5 text-xs text-blue-400">
+                              <span className="flex items-center gap-1.5 text-xs text-zan-cyan">
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                 Transcribing
                               </span>
@@ -652,13 +653,13 @@ export const VideoPlayer = () => {
                           <div className="p-1">
                             <button
                               onClick={handleToggleSubtitles}
-                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-white hover:bg-gray-800 rounded-lg transition-colors"
+                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-white hover:bg-zan-blue/15 rounded-lg transition-colors"
                             >
                               <span>Subtitles</span>
                               <span
                                 className={cn(
                                   "relative w-9 h-5 rounded-full transition-colors",
-                                  showSubtitles ? "bg-blue-600" : "bg-gray-600"
+                                  showSubtitles ? "bg-zan-cyan" : "bg-gray-600"
                                 )}
                               >
                                 <span
@@ -671,7 +672,7 @@ export const VideoPlayer = () => {
                             </button>
                             <button
                               onClick={() => setCcMenuView("language")}
-                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-zan-blue/15 rounded-lg transition-colors"
                             >
                               <span>Language</span>
                               <span className="flex items-center gap-1 text-gray-400">
@@ -681,11 +682,26 @@ export const VideoPlayer = () => {
                             </button>
                             <button
                               onClick={() => setCcMenuView("mode")}
-                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-gray-800 rounded-lg transition-colors"
+                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-zan-blue/15 rounded-lg transition-colors"
                             >
                               <span>Caption Mode</span>
                               <ChevronRight className="w-4 h-4" />
                             </button>
+                            {subtitleTracks.length > 0 && (
+                              <button
+                                onClick={() => {
+                                  setShowCCMenu(false);
+                                  onEditSubtitles?.();
+                                }}
+                                className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-zan-blue/15 rounded-lg transition-colors"
+                              >
+                                <span className="flex items-center gap-2">
+                                  <Pen className="w-3.5 h-3.5 text-gray-400" />
+                                  Edit Subtitles
+                                </span>
+                                <ChevronRight className="w-4 h-4 text-gray-500" />
+                              </button>
+                            )}
                             {transcriptionError && (
                               <p className="px-3 py-2 text-xs text-red-400 break-all">{transcriptionError}</p>
                             )}
@@ -697,7 +713,7 @@ export const VideoPlayer = () => {
                 </div>
                 <button
                   onClick={toggleFullscreen}
-                  className="text-white hover:text-blue-400 transition-colors"
+                  className="text-white hover:text-zan-cyan transition-colors"
                 >
                   {isFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
                 </button>
@@ -712,11 +728,11 @@ export const VideoPlayer = () => {
           <div className="mt-6 text-sm text-gray-600 max-w-md text-center">
             <p className="mb-2">Keyboard shortcuts:</p>
             <div className="grid grid-cols-2 gap-2">
-              <span><kbd className="bg-gray-800 px-2 py-1 rounded">Space</kbd> Play/Pause</span>
-              <span><kbd className="bg-gray-800 px-2 py-1 rounded">←/→</kbd> Seek</span>
-              <span><kbd className="bg-gray-800 px-2 py-1 rounded">↑/↓</kbd> Volume</span>
-              <span><kbd className="bg-gray-800 px-2 py-1 rounded">M</kbd> Mute</span>
-              <span><kbd className="bg-gray-800 px-2 py-1 rounded">F</kbd> Fullscreen</span>
+              <span><kbd className="bg-zan-black px-2 py-1 rounded">Space</kbd> Play/Pause</span>
+              <span><kbd className="bg-zan-black px-2 py-1 rounded">←/→</kbd> Seek</span>
+              <span><kbd className="bg-zan-black px-2 py-1 rounded">↑/↓</kbd> Volume</span>
+              <span><kbd className="bg-zan-black px-2 py-1 rounded">M</kbd> Mute</span>
+              <span><kbd className="bg-zan-black px-2 py-1 rounded">F</kbd> Fullscreen</span>
             </div>
           </div>
         </div>

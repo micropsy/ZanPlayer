@@ -290,7 +290,7 @@ export const useAppStore = create<AppState>()(
             setSidebarVisible: (visible: boolean) => set({ sidebarVisible: visible }),
         }),
         {
-            name: "subplayer-storage",
+            name: "zanplayer-storage",
             partialize: (state: AppState) => ({
                 theme: state.theme,
                 useLocalWhisper: state.useLocalWhisper,

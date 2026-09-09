@@ -1,4 +1,4 @@
-# Sub Player
+# ZanPlayer
 
 A modern, beautiful desktop video player with AI-powered subtitle generation and translation capabilities, built with Tauri, React, TypeScript, and Tailwind CSS. **100% offline-first** - no external API keys required!
 
@@ -59,8 +59,8 @@ A modern, beautiful desktop video player with AI-powered subtitle generation and
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/micropsy/subplayer.git
-cd subplayer
+git clone https://github.com/micropsy/ZanPlayer.git
+cd ZanPlayer
 ```
 
 2. Install dependencies:
@@ -87,7 +87,7 @@ FFmpeg is bundled as a Tauri sidecar binary and extracted automatically on first
 ## Project Structure
 
 ```
-Sub Player/
+ZanPlayer/
 ├── src/                    # Frontend (React)
 │   ├── components/         # UI Components
 │   │   ├── Sidebar.tsx    # Sidebar with controls

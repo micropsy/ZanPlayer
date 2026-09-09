@@ -1,7 +1,7 @@
 {
-  "productName": "Sub Player",
+  "productName": "ZanPlayer",
   "version": "0.1.0",
-  "identifier": "com.sub-player.dev",
+  "identifier": "com.zanplayer.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "Sub Player",
+        "title": "ZanPlayer",
         "width": 1200,
         "height": 800,
         "resizable": true
@@ -32,7 +32,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/micropsy/subplayer/releases/latest/download/latest.json"
+        "https://github.com/micropsy/ZanPlayer/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM4MDNFNTU3MTgxNzM3REMKUldUY054Y1lWK1VET0R6Tk1DTTFoZXhiaHk1ajNNUEVLeE4zRzZSLzhIQ1FQdWdaa3ByaGhSei8K",
       "installMode": "passive"
@@ -48,6 +48,9 @@
       "icons/128x128@2x.png",
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   }
 }
