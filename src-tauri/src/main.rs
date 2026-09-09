@@ -424,6 +424,18 @@ async fn transcribe_audio_local(
         download_whisper_model(app.clone(), model_name).await?;
     }
 
+    // Serialize all Whisper decoding sessions (whisper.cpp/ggml is not safe for two
+    // concurrent `whisper_full_with_state` calls). Dropping a new video while a previous
+    // transcription is still finalizing would otherwise start a second session in parallel,
+    // and the callback user_data pointers (leaked boxes, stable for the whole process)
+    // must never be dereferenced while two sessions are live. The guard is acquired after
+    // the only `.await` in this function and held across purely synchronous Whisper calls,
+    // so it never blocks a tokio runtime thread mid-poll.
+    static TRANSCRIPTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _transcription_guard = TRANSCRIPTION_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
     let params = WhisperContextParameters::default();
     let ctx = WhisperContext::new_with_params(&model_path.to_string_lossy(), params)
         .map_err(|e| format!("Failed to load Whisper model: {}", e))?;

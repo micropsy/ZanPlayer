@@ -199,11 +199,13 @@ export const SettingsComponent = () => {
       }
     } catch (error) {
       console.error("Update check failed:", error);
-      const detail = error instanceof Error ? error.message : String(error);
-      await message(`Update check failed: ${detail}`, {
-        title: "Update Error",
-        kind: "error",
-      }).catch(() => {});
+      await message(
+        "Unable to check for updates at this time (dev mode or no connection).",
+        {
+          title: "Update Error",
+          kind: "error",
+        }
+      ).catch(() => {});
     } finally {
       if (isTauri()) setIsCheckingUpdate(false);
     }
@@ -246,14 +248,20 @@ export const SettingsComponent = () => {
           <button
             onClick={handleCheckUpdate}
             disabled={isCheckingUpdate}
+            aria-busy={isCheckingUpdate}
             className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {isCheckingUpdate ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Checking...
+              </>
             ) : (
-              <RefreshCw className="w-4 h-4" />
+              <>
+                <RefreshCw className="w-4 h-4" />
+                Check for Updates
+              </>
             )}
-            {isCheckingUpdate ? "Checking..." : "Check for Updates"}
           </button>
         ) : (
           <p className={`text-xs ${labelClass(theme)}`}>
