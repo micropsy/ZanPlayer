@@ -31,6 +31,7 @@ function App() {
   const setCurrentVideoUrl = useAppStore(state => state.setCurrentVideoUrl);
   const setCurrentVideoPath = useAppStore(state => state.setCurrentVideoPath);
   const setSubtitleTracks = useAppStore(state => state.setSubtitleTracks);
+  const resetSubtitles = useAppStore(state => state.resetSubtitles);
   const setActiveSubtitleTrackId = useAppStore(state => state.setActiveSubtitleTrackId);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -121,6 +122,7 @@ function App() {
         // Handle video/audio file
         try {
           const url = await TauriService.getVideoBlobUrl(filePath);
+          resetSubtitles(); // Wipe out subtitles from the previous video
           setCurrentVideo(null); // Clear any File object
           setCurrentVideoUrl(url);
           setCurrentVideoPath(filePath);
@@ -145,7 +147,7 @@ function App() {
         }
       }
     }
-  }, [setCurrentVideo, setCurrentVideoUrl, setCurrentVideoPath, setSubtitleTracks, setActiveSubtitleTrackId]);
+  }, [setCurrentVideo, setCurrentVideoUrl, setCurrentVideoPath, resetSubtitles, setSubtitleTracks, setActiveSubtitleTrackId]);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -226,6 +228,7 @@ function App() {
     if (!isTauri() && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const file = e.dataTransfer.files[0];
       if (file.type.startsWith('video/') || file.type.startsWith('audio/')) {
+        resetSubtitles(); // Wipe out subtitles from the previous video
         setCurrentVideo(file);
         const url = URL.createObjectURL(file);
         setCurrentVideoUrl(url);
@@ -255,7 +258,7 @@ function App() {
         reader.readAsText(file);
       }
     }
-  }, [setCurrentVideo, setCurrentVideoUrl, setCurrentVideoPath, setSubtitleTracks, setActiveSubtitleTrackId]);
+  }, [setCurrentVideo, setCurrentVideoUrl, setCurrentVideoPath, resetSubtitles, setSubtitleTracks, setActiveSubtitleTrackId]);
 
   return (
     <div 

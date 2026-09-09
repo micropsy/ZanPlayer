@@ -26,6 +26,7 @@ interface AppState {
     setCurrentVideoPath: (path: string | null) => void;
     subtitleTracks: SubtitleTrack[];
     setSubtitleTracks: (tracks: SubtitleTrack[]) => void;
+    resetSubtitles: () => void;
     activeSubtitleTrackId: string | null;
     setActiveSubtitleTrackId: (id: string | null) => void;
     activeTranslatedTrackId: string | null;
@@ -96,6 +97,13 @@ export const useAppStore = create<AppState>()(
             setCurrentVideoPath: (path: string | null) => set({ currentVideoPath: path }),
             subtitleTracks: [],
             setSubtitleTracks: (tracks: SubtitleTrack[]) => set({ subtitleTracks: tracks }),
+            resetSubtitles: () =>
+                set({
+                    subtitleTracks: [],
+                    activeSubtitleTrackId: null,
+                    activeTranslatedTrackId: null,
+                    isTranscribing: false,
+                }),
             activeSubtitleTrackId: null,
             setActiveSubtitleTrackId: (id: string | null) => set({ activeSubtitleTrackId: id }),
             activeTranslatedTrackId: null,

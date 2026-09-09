@@ -24,6 +24,7 @@ export const Sidebar = () => {
     setCurrentVideoUrl,
     subtitleTracks,
     setSubtitleTracks,
+    resetSubtitles,
     activeSubtitleTrackId,
     setActiveSubtitleTrackId,
     activeTranslatedTrackId,
@@ -59,6 +60,7 @@ export const Sidebar = () => {
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const file = e.dataTransfer.files[0];
       if (file.type.startsWith("video/")) {
+        resetSubtitles();
         setCurrentVideo(file);
         const url = URL.createObjectURL(file);
         setCurrentVideoUrl(url);
@@ -86,7 +88,7 @@ export const Sidebar = () => {
         }
       }
     }
-  }, [currentVideo, subtitleTracks]);
+  }, [currentVideo, subtitleTracks, resetSubtitles]);
 
   const parseSRT = (text: string) => {
     const cues: any[] = [];
@@ -148,6 +150,7 @@ export const Sidebar = () => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.type.startsWith("video/")) {
+        resetSubtitles();
         setCurrentVideo(file);
         const url = URL.createObjectURL(file);
         setCurrentVideoUrl(url);
@@ -192,6 +195,7 @@ export const Sidebar = () => {
     try {
       const videoFile = await TauriService.openVideoDialog();
       if (videoFile) {
+        resetSubtitles();
         setCurrentVideoPath(videoFile.path);
         const url = `file://${encodeURIComponent(videoFile.path)}`;
         setCurrentVideoUrl(url);

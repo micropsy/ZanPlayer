@@ -253,10 +253,10 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   };
 
   // Transcribe the current video via process_dropped_video (extract + whisper + cleanup)
-  const transcribeVideo = async () => {
+  const transcribeVideo = async (videoPathOverride?: string) => {
     const s = useAppStore.getState();
     if (s.isTranscribing) return;
-    const videoPath = s.currentVideoPath;
+    const videoPath = videoPathOverride || s.currentVideoPath;
     if (!videoPath) {
       console.error("Auto-transcribe requires a video path");
       return;
@@ -274,6 +274,10 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         undefined,
         langToUse
       );
+      // Stale transcription guard: ignore results if the user switched videos mid-run
+      if (useAppStore.getState().currentVideoPath !== videoPath) {
+        return;
+      }
       const selectedLang = SUBTITLE_LANGUAGES.find((l) => l.code === s.targetLanguage);
       const label = !langToUse ? "Original" : selectedLang?.name || s.targetLanguage;
       const newTrack: SubtitleTrack = {
@@ -287,14 +291,18 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       useAppStore.getState().setActiveSubtitleTrackId(newTrack.id);
       useAppStore.getState().setShowSubtitles(true);
     } catch (err) {
-      console.error("Auto-transcription error:", err);
-      setTranscriptionError(err instanceof Error ? err.message : String(err));
+      if (useAppStore.getState().currentVideoPath === videoPath) {
+        console.error("Auto-transcription error:", err);
+        setTranscriptionError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      useAppStore.getState().setIsTranscribing(false);
+      if (useAppStore.getState().currentVideoPath === videoPath) {
+        useAppStore.getState().setIsTranscribing(false);
+      }
     }
   };
 
-  const transcribeVideoRef = useRef<() => Promise<void>>(async () => {});
+  const transcribeVideoRef = useRef<(videoPath?: string) => Promise<void>>(async () => {});
   transcribeVideoRef.current = transcribeVideo;
 
   const currentLanguageLabel =
@@ -349,16 +357,19 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     }
   }, [currentVideoPath, currentVideoUrl]);
 
+  // Auto-transcribe a newly loaded video when captions are enabled and no subtitles exist yet
+  useEffect(() => {
+    if (currentVideoPath && showSubtitles && subtitleTracks.length === 0) {
+      transcribeVideoRef.current(currentVideoPath);
+    }
+  }, [currentVideoPath, showSubtitles, subtitleTracks.length]);
+
   useEffect(() => {
     let unlisten: () => void;
     const setupDropListener = async () => {
       if (!isTauri()) return;
       unlisten = await listen("zanplayer:video-dropped", () => {
         pendingPlayRef.current = true;
-        const s = useAppStore.getState();
-        if (s.subtitleTracks.length === 0 && !s.isTranscribing && s.currentVideoPath) {
-          transcribeVideoRef.current();
-        }
       });
     };
     setupDropListener();
