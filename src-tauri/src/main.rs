@@ -39,7 +39,7 @@ struct ProgressPayload {
 }
 
 fn get_app_dir() -> PathBuf {
-    let proj_dirs = ProjectDirs::from("com", "micropsy", "SubPlayer").expect("Failed to get app dir");
+    let proj_dirs = ProjectDirs::from("com", "micropsy", "ZanPlayer").expect("Failed to get app dir");
     proj_dirs.data_local_dir().to_path_buf()
 }
 
@@ -76,7 +76,7 @@ async fn download_whisper_model(app: AppHandle, model_name: String) -> Result<St
         );
 
         let client = reqwest::Client::builder()
-            .user_agent("SubPlayer/1.0 (macOS)")
+            .user_agent("ZanPlayer/1.0 (macOS)")
             .build()
             .map_err(|e| format!("Failed to build client: {}", e))?;
 
