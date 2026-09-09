@@ -77,8 +77,6 @@ const systemFonts = [
 const card = (theme: string) =>
   theme === "dark" ? "bg-zan-black/40 border-gray-700/50" : "bg-white border-gray-200";
 
-const rowDividers = (theme: string) => (theme === "dark" ? "divide-gray-700/50" : "divide-gray-200");
-
 const labelClass = (theme: string) =>
   theme === "dark" ? "text-gray-400" : "text-gray-500";
 
@@ -259,7 +257,7 @@ export const SettingsComponent = () => {
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <h3 className={`text-sm font-semibold ${valueClass(theme)}`}>
-              Models
+              Whisper Models
             </h3>
             <Info className={`w-4 h-4 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`} />
           </div>
@@ -297,8 +295,8 @@ export const SettingsComponent = () => {
                       : "hover:border-gray-300"
                 }`}
               >
-                <div className="flex justify-between items-start mb-2">
-                  <div className="flex items-center flex-wrap gap-2">
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <div className="flex items-center flex-wrap gap-2 min-w-0 flex-1">
                     <span className={`text-base font-semibold ${valueClass(theme)}`}>
                       {model.name}
                     </span>
@@ -318,7 +316,7 @@ export const SettingsComponent = () => {
                     )}
                     {isSelected && <CheckCircle2 className="w-4 h-4 text-green-400" />}
                   </div>
-                  <span className={`text-xs ${labelClass(theme)} whitespace-nowrap mt-1`}>
+                  <span className={`text-xs font-medium ${labelClass(theme)} whitespace-nowrap shrink-0`}>
                     {model.size}
                   </span>
                 </div>
@@ -331,13 +329,13 @@ export const SettingsComponent = () => {
                   <div className="flex items-center justify-between text-xs text-gray-400">
                     <span className="w-16">Accuracy</span>
                     <div className={`flex-1 h-1.5 bg-gray-700 rounded-full ml-2 overflow-hidden`}>
-                      <div className="h-full bg-zan-cyan rounded-full" style={{ width: `${model.accuracy}%` }} />
+                      <div className="h-full bg-blue-500 rounded-full" style={{ width: `${model.accuracy}%` }} />
                     </div>
                   </div>
                   <div className="flex items-center justify-between text-xs text-gray-400">
                     <span className="w-16">Speed</span>
                     <div className={`flex-1 h-1.5 bg-gray-700 rounded-full ml-2 overflow-hidden`}>
-                      <div className="h-full bg-zan-cyan rounded-full" style={{ width: `${model.speed}%` }} />
+                      <div className="h-full bg-blue-500 rounded-full" style={{ width: `${model.speed}%` }} />
                     </div>
                   </div>
                 </div>
@@ -488,6 +486,55 @@ export const SettingsComponent = () => {
         </div>
       </section>
 
+      {/* Translation Model */}
+      <section className="space-y-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <h3 className={`text-sm font-semibold ${valueClass(theme)}`}>
+              Translation Model (Offline)
+            </h3>
+            <Languages className={`w-4 h-4 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`} />
+          </div>
+          <p className={`text-xs ${labelClass(theme)}`}>
+            Offline machine translation for subtitles. Runs entirely on your device — no internet after download.
+          </p>
+        </div>
+
+        <div className={`p-4 rounded-xl border ${card(theme)}`}>
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div className="flex items-center flex-wrap gap-2 min-w-0 flex-1">
+              <span className={`text-base font-semibold ${valueClass(theme)}`}>
+                NLLB-200
+              </span>
+              <span className="px-1.5 py-0.5 bg-purple-500/15 text-purple-400 text-[10px] font-semibold rounded-full">
+                Multilingual
+              </span>
+              <span className="px-1.5 py-0.5 bg-zan-cyan/15 text-zan-cyan text-[10px] font-semibold rounded-full">
+                Offline
+              </span>
+            </div>
+            <span className={`text-xs font-medium ${labelClass(theme)} whitespace-nowrap shrink-0`}>
+              ~600MB
+            </span>
+          </div>
+          <p className={`text-[11px] ${labelClass(theme)}`}>
+            Translate subtitles between 200+ languages directly inside ZanPlayer using a local NLLB-200 model.
+          </p>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <button
+              onClick={() => console.log("Download NLLB")}
+              className="flex items-center gap-1.5 px-4 py-1.5 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-xs font-medium transition-all"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download
+            </button>
+            <span className={`text-[10px] ${labelClass(theme)}`}>
+              Translation engine coming soon
+            </span>
+          </div>
+        </div>
+      </section>
+
       {/* Subtitle Style */}
       <section className="space-y-4">
         <h3 className={`text-sm font-semibold flex items-center gap-2 ${valueClass(theme)}`}>
@@ -525,16 +572,16 @@ export const SettingsComponent = () => {
         </div>
 
         {/* Grouped settings list */}
-        <div className={`rounded-xl border overflow-hidden divide-y ${card(theme)} ${rowDividers(theme)}`}>
+        <div className="grid grid-cols-2 gap-3">
           {/* Font Family */}
-          <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+          <div className={`p-4 rounded-xl border flex flex-col gap-2 ${card(theme)}`}>
             <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Font
             </span>
             <select
               value={subtitleStyle.fontName}
               onChange={(e) => setSubtitleStyle({ fontName: e.target.value })}
-              className={`w-48 ${selectFieldClass}`}
+              className={`w-full ${selectFieldClass}`}
             >
               {systemFonts.map((font) => (
                 <option key={font} value={font} style={{ fontFamily: font }}>
@@ -545,18 +592,18 @@ export const SettingsComponent = () => {
           </div>
 
           {/* Font Size */}
-          <div className="flex items-center justify-between gap-4 px-4 py-3.5">
+          <div className={`p-4 rounded-xl border flex flex-col gap-2 ${card(theme)}`}>
             <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Font Size
             </span>
-            <div className="flex items-center gap-3 flex-1 max-w-[16rem]">
+            <div className="flex items-center justify-between gap-3">
               <input
                 type="range"
                 min="12"
                 max="72"
                 value={subtitleStyle.fontSize}
                 onChange={(e) => setSubtitleStyle({ fontSize: parseInt(e.target.value) })}
-                className={`appearance-none w-full h-1 rounded-full cursor-pointer accent-zan-cyan ${trackClass(theme)}`}
+                className={`appearance-none flex-1 h-1 rounded-full cursor-pointer accent-zan-cyan ${trackClass(theme)}`}
               />
               <span className={`w-10 text-right text-xs font-mono ${valueClass(theme)}`}>
                 {subtitleStyle.fontSize}px
@@ -565,7 +612,7 @@ export const SettingsComponent = () => {
           </div>
 
           {/* Text Color */}
-          <div className="flex items-center justify-between px-4 py-3">
+          <div className={`p-4 rounded-xl border flex flex-col gap-2 ${card(theme)}`}>
             <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Text Color
             </span>
@@ -585,14 +632,14 @@ export const SettingsComponent = () => {
                 type="text"
                 value={subtitleStyle.primaryColor}
                 onChange={(e) => setSubtitleStyle({ primaryColor: e.target.value })}
-                className={`w-24 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
+                className={`w-full min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
                 spellCheck={false}
               />
             </div>
           </div>
 
           {/* Outline Color */}
-          <div className="flex items-center justify-between px-4 py-3">
+          <div className={`p-4 rounded-xl border flex flex-col gap-2 ${card(theme)}`}>
             <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Outline Color
             </span>
@@ -612,14 +659,14 @@ export const SettingsComponent = () => {
                 type="text"
                 value={subtitleStyle.outlineColor}
                 onChange={(e) => setSubtitleStyle({ outlineColor: e.target.value })}
-                className={`w-24 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
+                className={`w-full min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
                 spellCheck={false}
               />
             </div>
           </div>
 
           {/* Background Color */}
-          <div className="flex items-center justify-between px-4 py-3">
+          <div className={`p-4 rounded-xl border flex flex-col gap-2 ${card(theme)}`}>
             <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Background
             </span>
@@ -642,14 +689,14 @@ export const SettingsComponent = () => {
                 type="text"
                 value={subtitleStyle.backColor}
                 onChange={(e) => setSubtitleStyle({ backColor: e.target.value })}
-                className={`w-24 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
+                className={`w-full min-w-0 px-2.5 py-1.5 rounded-lg text-xs font-mono border focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`}
                 spellCheck={false}
               />
             </div>
           </div>
 
           {/* Bold */}
-          <div className="flex items-center justify-between px-4 py-3">
+          <div className={`p-4 rounded-xl border flex items-center justify-between gap-3 ${card(theme)}`}>
             <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Bold
             </span>
@@ -660,7 +707,7 @@ export const SettingsComponent = () => {
           </div>
 
           {/* Italic */}
-          <div className="flex items-center justify-between px-4 py-3">
+          <div className={`p-4 rounded-xl border flex items-center justify-between gap-3 ${card(theme)}`}>
             <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Italic
             </span>
@@ -671,7 +718,7 @@ export const SettingsComponent = () => {
           </div>
 
           {/* Position */}
-          <div className="flex items-center justify-between px-4 py-3">
+          <div className={`p-4 rounded-xl border flex flex-col gap-2 ${card(theme)}`}>
             <span className={`text-sm ${theme === 'dark' ? 'text-gray-300' : 'text-gray-700'}`}>
               Subtitle Position
             </span>

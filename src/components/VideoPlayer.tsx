@@ -15,7 +15,6 @@ import {
   Loader2,
   ChevronRight,
   ChevronLeft,
-  Pen,
 } from "lucide-react";
 import { cn } from "../utils/cn";
 import { TauriService, isTauri } from "../services/tauri";
@@ -698,21 +697,19 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                               <span>Caption Mode</span>
                               <ChevronRight className="w-4 h-4" />
                             </button>
-                            {subtitleTracks.length > 0 && (
-                              <button
-                                onClick={() => {
-                                  setShowCCMenu(false);
-                                  onEditSubtitles?.();
-                                }}
-                                className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-zan-blue/15 rounded-lg transition-colors"
-                              >
-                                <span className="flex items-center gap-2">
-                                  <Pen className="w-3.5 h-3.5 text-gray-400" />
-                                  Edit Subtitles
-                                </span>
-                                <ChevronRight className="w-4 h-4 text-gray-500" />
-                              </button>
-                            )}
+                            <button
+                              onClick={() => {
+                                setShowCCMenu(false);
+                                onEditSubtitles?.();
+                              }}
+                              className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm text-gray-200 hover:bg-zan-blue/15 rounded-lg transition-colors border-t border-gray-700/70 mt-1 pt-2"
+                            >
+                              <span className="flex items-center gap-2">
+                                <span className="text-sm">✏️</span>
+                                Edit Subtitles
+                              </span>
+                              <ChevronRight className="w-4 h-4 text-gray-500" />
+                            </button>
                             {transcriptionError && (
                               <p className="px-3 py-2 text-xs text-red-400 break-all">{transcriptionError}</p>
                             )}

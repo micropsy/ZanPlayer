@@ -56,7 +56,7 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
   return (
     <aside
       className={cn(
-        "w-[30%] min-w-[340px] max-w-[440px] h-full flex flex-col border-l",
+        "w-96 h-full flex flex-col border-l",
         theme === "dark" ? "border-gray-700 bg-zan-black" : "border-gray-200 bg-white"
       )}
     >
