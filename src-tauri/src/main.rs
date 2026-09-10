@@ -496,8 +496,15 @@ async fn transcribe_audio_local(
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_single_segment(false);
-    // Set translate to true if target_language is "en" (Whisper only supports translating to English)
-    params.set_translate(target_language.as_deref() == Some("en"));
+    // Whisper always runs the `translate` task so every raw transcript comes out
+    // in English (whisper.cpp only supports translate-to-English anyway). The
+    // frontend's offline NLLB model then converts those English captions into
+    // whichever target language the user selected, so keeping the spoken input
+    // language (below) intact is the only requirement here.
+    params.set_translate(true);
+    // The `target_language` argument is intentionally unused from here on: the
+    // offline NLLB stage owns the user-visible subtitle language instead.
+    let _ = target_language;
     // Bind the normalized code for the lifetime of `params` (set_language borrows
     // a &str tied to the params lifetime).
     let lang_code = whisper_language_code(language.as_deref());

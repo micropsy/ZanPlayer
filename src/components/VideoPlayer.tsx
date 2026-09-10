@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { useAppStore, whisperLangCode, type SubtitleDisplayMode } from "../services/store";
+import { useAppStore, whisperLangCode, SUBTITLE_LANGUAGES, type SubtitleDisplayMode } from "../services/store";
 import {
   Play,
   Pause,
@@ -20,24 +20,6 @@ import { cn } from "../utils/cn";
 import { TauriService, isTauri } from "../services/tauri";
 import { translationService } from "../services/translation";
 import type { SubtitleTrack, SubtitleCue } from "../types/subtitle";
-
-const SUBTITLE_LANGUAGES = [
-  { code: "auto", name: "Original" },
-  { code: "en", name: "English" },
-  { code: "es", name: "Spanish" },
-  { code: "my", name: "Burmese" },
-  { code: "fr", name: "French" },
-  { code: "de", name: "German" },
-  { code: "ja", name: "Japanese" },
-  { code: "ko", name: "Korean" },
-  { code: "zh", name: "Chinese (Simplified)" },
-  { code: "pt", name: "Portuguese" },
-  { code: "ru", name: "Russian" },
-  { code: "th", name: "Thai" },
-  { code: "vi", name: "Vietnamese" },
-  { code: "hi", name: "Hindi" },
-  { code: "ar", name: "Arabic" },
-];
 
 const SOURCE_LANGUAGES = [
   { code: "auto", name: "Auto-Detect" },
@@ -302,10 +284,11 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     }
     setTranscriptionError(null);
     // Force Whisper to recognize in the explicitly selected spoken language; auto-detection otherwise.
-    // The translation target is handled separately by the offline NLLB model, so the whisper
-    // translate-to-English mode is intentionally not enabled here. Normalize through
-    // `whisperLangCode` so only valid ISO codes (or undefined for auto) reach Rust — a full
-    // display name like "Burmese" would otherwise be indexed out of bounds by whisper.cpp.
+    // Whisper always runs the `translate` task (see transcribe_audio_local), so the raw track
+    // comes back in English and the offline NLLB model turns those English captions into the
+    // user-selected target language. Normalize through `whisperLangCode` so only valid ISO codes
+    // (or undefined for auto) reach Rust — a full display name like "Burmese" would otherwise be
+    // indexed out of bounds by whisper.cpp.
     const sourceLangToUse = whisperLangCode(s.sourceLanguage);
     const label = !sourceLangToUse
       ? "Original"
@@ -448,7 +431,12 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     inTranslationIdsRef.current.add(cue.id);
     const gen = translateGenerationRef.current;
     try {
-      const result = await translationService.translateChunk(text, lang);
+      // Whisper always produces English transcripts, so the auto-generated
+      // track is translated FROM English regardless of the spoken audio. For
+      // imported SRT tracks the worker falls back to script detection instead.
+      const activeTrack = s.subtitleTracks.find((t) => t.id === s.activeSubtitleTrackId);
+      const srcLang = activeTrack?.isGenerated ? "en" : undefined;
+      const result = await translationService.translateChunk(text, lang, srcLang);
       if (translateGenerationRef.current !== gen) return;
       useAppStore.getState().appendTranslatedCue({ id: cue.id, text: result });
       // Realtime mode: the very first streamed chunk landing means the live
@@ -464,10 +452,13 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   translateSingleCueRef.current = translateSingleCue;
 
   // Dispatch a batch of cues to the chunk translator (fire-and-forget; realtime
-  // flows want zero backpressure on the queue).
+  // flows want zero backpressure on the queue). Errors are logged rather than
+  // swallowed so a failing NLLB session is never invisible.
   const dispatchCuesToTranslate = (cues: SubtitleCue[]) => {
     for (const cue of cues) {
-      void translateSingleCueRef.current(cue).catch(() => {});
+      void translateSingleCueRef.current(cue).catch((err) => {
+        console.error("Realtime chunk translation failed:", err);
+      });
     }
   };
   const dispatchCuesToTranslateRef = useRef(dispatchCuesToTranslate);
@@ -615,6 +606,18 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       setIsTranslating(false);
     }
   };
+  const translateSubtitlesRef = useRef<(code: string) => Promise<void>>(async () => {});
+  translateSubtitlesRef.current = translateSubtitles;
+
+  // Keep the player in sync whenever the caption language changes — from the CC
+  // Language menu or the Caption Language picker in Settings. Re-translates the
+  // active track to the new target (or returns to "Original" for auto). A fresh
+  // session has no active track yet, so this is a no-op until subtitles exist.
+  useEffect(() => {
+    const s = useAppStore.getState();
+    if (!s.activeSubtitleTrackId) return;
+    void translateSubtitlesRef.current(s.targetLanguage);
+  }, [targetLanguage]);
 
   // Cancel any in-flight translation when the player unmounts
   useEffect(() => {
@@ -1095,6 +1098,10 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                             </button>
                             <span className="text-sm font-semibold text-white px-2">Spoken Audio (Source)</span>
                           </div>
+                          <p className="px-3 py-2 text-[11px] leading-relaxed text-gray-400 border-b border-gray-700/60">
+                            Whisper transcribes the speech here and always outputs it in{" "}
+                            <span className="text-zan-cyan font-medium">English</span>.
+                          </p>
                           <div className="max-h-64 overflow-y-auto p-1">
                             {SOURCE_LANGUAGES.map((lang) => (
                               <button
@@ -1133,19 +1140,17 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                                 key={lang.code}
                                 onClick={() => {
                                   setTargetLanguage(lang.code);
-                                  if (lang.code === "auto" || lang.code === "original") {
+                                  if (lang.code === "auto") {
+                                    // Back to the untranslated track.
                                     setSubtitleDisplayMode("original");
                                   } else {
-                                    // Selecting a target language instantly switches
-                                    // captions to Dual so translated text appears right
-                                    // away instead of hiding behind the Caption Mode menu.
+                                    // Selecting a target language instantly switches captions
+                                    // to Dual so translated text appears right away; the
+                                    // targetLanguage watcher kicks off the actual translation.
                                     setSubtitleDisplayMode("dual");
                                   }
                                   if (lang.code !== "auto" && subtitleTracks.length === 0 && !isTranscribing) {
                                     transcribeVideoRef.current();
-                                  }
-                                  if (subtitleTracks.length > 0) {
-                                    void translateSubtitles(lang.code);
                                   }
                                   setCcMenuView("root");
                                 }}

@@ -278,12 +278,15 @@ class TranslationService {
 
   // Translate a single cue and resolve as soon as the worker posts back its
   // "chunk-translated" result. Used by the realtime/full streaming flows so the
-  // UI never blocks on one monolithic batch request.
-  async translateChunk(text: string, targetLang: string): Promise<string> {
+  // UI never blocks on one monolithic batch request. `srcLang` defaults to
+  // English inside the worker (Whisper's output); passing it explicitly here
+  // pins eng_Latn for Whisper-generated tracks.
+  async translateChunk(text: string, targetLang: string, srcLang?: string): Promise<string> {
     await this.ensureReady();
     const response = await this.request("translate-chunk", {
       text,
       tgtLang: targetLang,
+      ...(srcLang ? { srcLang } : {}),
     });
     if (response.type === "chunk-translated") {
       return response.translatedText;

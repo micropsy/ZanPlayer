@@ -89,6 +89,18 @@ export function detectSourceFloresCode(texts: string[]): string {
   return "eng_Latn";
 }
 
+// Resolve the NLLB source language. Whisper always returns English transcripts,
+// so `eng_Latn` is the absolute default for the auto-generated pipeline. An
+// explicit `srcLang` (e.g. pinned to "en" by the player) always wins; for
+// non-Whisper tracks (imported SRT files) whose text is visibly written in a
+// foreign script, script detection kicks in as a fallback so they still
+// translate instead of being mislabeled as English.
+export function resolveSourceLang(srcLang: string | undefined, texts: string[]): string {
+  const explicit = toFloresCode(srcLang);
+  if (explicit) return explicit;
+  return detectSourceFloresCode(texts);
+}
+
 type Message = { type: string; id: string; payload: unknown };
 
 interface InitPayload {
@@ -107,6 +119,7 @@ interface TranslatePayload {
 
 interface TranslateChunkPayload {
   text: string;
+  srcLang?: string;
   tgtLang: string;
 }
 
@@ -203,7 +216,7 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
         throw new Error("Translation model is not loaded yet");
       }
       const model = translator;
-      const sourceCode = toFloresCode(srcLang) ?? detectSourceFloresCode(texts);
+      const sourceCode = resolveSourceLang(srcLang, texts);
       const targetCode = toFloresCode(tgtLang);
       if (!targetCode) {
         throw new Error(`Unsupported target language: ${tgtLang}`);
@@ -237,7 +250,7 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
     }
   },
   "translate-chunk": async (id, payload) => {
-    const { text, tgtLang } = payload as TranslateChunkPayload;
+    const { text, srcLang, tgtLang } = payload as TranslateChunkPayload;
     try {
       if (!translator) {
         throw new Error("Translation model is not loaded yet");
@@ -247,7 +260,7 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
         post({ type: "chunk-translated", id, translatedText: "" });
         return;
       }
-      const sourceCode = toFloresCode(undefined) ?? detectSourceFloresCode([text]);
+      const sourceCode = resolveSourceLang(srcLang, [text]);
       const targetCode = toFloresCode(tgtLang);
       if (!targetCode) {
         throw new Error(`Unsupported target language: ${tgtLang}`);

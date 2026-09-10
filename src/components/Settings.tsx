@@ -1,4 +1,4 @@
-import { useAppStore } from "../services/store";
+import { useAppStore, SUBTITLE_LANGUAGES } from "../services/store";
 import { Languages, Settings as SettingsIcon, CheckCircle2, Info, Download, Trash2, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isTauri } from "../services/tauri";
@@ -132,6 +132,8 @@ export const SettingsComponent = () => {
     setTranslationModelAvailable,
     translationModelLoading,
     translationError,
+    targetLanguage,
+    setTargetLanguage,
     transcriptionMode,
     setTranscriptionMode,
     autoCheckUpdates,
@@ -611,6 +613,43 @@ export const SettingsComponent = () => {
               )}
             </div>
           )}
+        </div>
+      </section>
+
+      {/* Target Language */}
+      <section className="space-y-2">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <h3 className={`text-sm font-semibold ${valueClass(theme)}`}>
+              Target Language
+            </h3>
+            <Languages className={`w-4 h-4 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`} />
+          </div>
+          <p className={`text-xs ${labelClass(theme)}`}>
+            Whisper transcribes every video in English first, then the offline
+            translation model converts those English captions into the language
+            you want to read here. English is the default.
+          </p>
+        </div>
+
+        <div className={`p-4 rounded-xl border ${card(theme)}`}>
+          <label className={`block text-sm font-medium mb-2 ${labelClass(theme)}`}>
+            Target subtitle language
+          </label>
+          <select
+            value={targetLanguage}
+            onChange={(e) => setTargetLanguage(e.target.value)}
+            className={inputClass}
+          >
+            {SUBTITLE_LANGUAGES.map((lang) => (
+              <option key={lang.code} value={lang.code}>
+                {lang.name}
+              </option>
+            ))}
+          </select>
+          <p className={`text-[11px] mt-2 ${labelClass(theme)}`}>
+            Changing this also applies to the currently loaded video's captions.
+          </p>
         </div>
       </section>
 

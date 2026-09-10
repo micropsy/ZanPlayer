@@ -18,6 +18,28 @@ export interface SubtitleStyle {
     alignment: "bottom" | "top";
 }
 
+// Title/language options shown in the CC menu and the Settings caption-language
+// picker. "auto" is the untranslated Original track; every other entry is a
+// target language for the offline NLLB translation model (whose input is the
+// English transcript produced by Whisper).
+export const SUBTITLE_LANGUAGES = [
+    { code: "auto", name: "Original" },
+    { code: "en", name: "English" },
+    { code: "es", name: "Spanish" },
+    { code: "my", name: "Burmese" },
+    { code: "fr", name: "French" },
+    { code: "de", name: "German" },
+    { code: "ja", name: "Japanese" },
+    { code: "ko", name: "Korean" },
+    { code: "zh", name: "Chinese (Simplified)" },
+    { code: "pt", name: "Portuguese" },
+    { code: "ru", name: "Russian" },
+    { code: "th", name: "Thai" },
+    { code: "vi", name: "Vietnamese" },
+    { code: "hi", name: "Hindi" },
+    { code: "ar", name: "Arabic" },
+] as const;
+
 // Full display names -> whisper ISO-639-1 codes. whisper.cpp's `g_lang` table only
 // resolves ISO codes ("en", "my") or its own full names ("english", "myanmar");
 // any other string yields lang_id == -1 and then indexes `ailang_2_tok[-1]` out of
