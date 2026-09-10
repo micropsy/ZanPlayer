@@ -143,6 +143,8 @@ interface AppState {
     setTranslationModelAvailable: (available: boolean) => void;
     translationModelLoading: boolean;
     setTranslationModelLoading: (loading: boolean) => void;
+    translationLoadProgress: number;
+    setTranslationLoadProgress: (progress: number) => void;
     translationError: string | null;
     setTranslationError: (error: string | null) => void;
 
@@ -369,6 +371,9 @@ export const useAppStore = create<AppState>()(
             setTranslationModelAvailable: (available: boolean) => set({ translationModelAvailable: available }),
             translationModelLoading: false,
             setTranslationModelLoading: (loading: boolean) => set({ translationModelLoading: loading }),
+            translationLoadProgress: 0,
+            setTranslationLoadProgress: (progress: number) =>
+                set({ translationLoadProgress: Math.min(100, Math.max(0, Math.round(progress))) }),
             translationError: null,
             setTranslationError: (error: string | null) => set({ translationError: error }),
 

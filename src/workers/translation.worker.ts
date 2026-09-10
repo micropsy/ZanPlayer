@@ -12,6 +12,7 @@ export const DEFAULT_REPETITION_PENALTY = 1.5;
 export const DEFAULT_NO_REPEAT_NGRAM_SIZE = 3;
 
 const FLORES_TARGET: Record<string, string> = {
+  // ISO-639-1 codes
   en: "eng_Latn",
   es: "spa_Latn",
   my: "mya_Mymr",
@@ -26,6 +27,25 @@ const FLORES_TARGET: Record<string, string> = {
   vi: "vie_Latn",
   hi: "hin_Deva",
   ar: "arb_Arab",
+  // Full display names (defensive: NLLB strictly needs Flores-200 codes, and
+  // any unresolved string makes the pipeline crash silently).
+  english: "eng_Latn",
+  spanish: "spa_Latn",
+  espanol: "spa_Latn",
+  burmese: "mya_Mymr",
+  myanmar: "mya_Mymr",
+  french: "fra_Latn",
+  german: "deu_Latn",
+  japanese: "jpn_Jpan",
+  korean: "kor_Hang",
+  chinese: "zho_Hans",
+  "chinese (simplified)": "zho_Hans",
+  portuguese: "por_Latn",
+  russian: "rus_Cyrl",
+  thai: "tha_Thai",
+  vietnamese: "vie_Latn",
+  hindi: "hin_Deva",
+  arabic: "arb_Arab",
 };
 
 const SCRIPT_RULES: Array<{ pattern: RegExp; code: string }> = [
@@ -98,6 +118,12 @@ type Translator = (
 let translator: Translator | null = null;
 let initPromise: Promise<void> | null = null;
 
+// Monotonic load progress for the "Loading Translator... %" indicator. The
+// NLLB ONNX model reports progress twice (encoder, then merged decoder), each
+// 0..100; mapping the second pass onto the 50..100 range keeps the bar rising.
+let doneLoadPasses = 0;
+let lastLoadPercent = 0;
+
 // Serialize model calls so chunk translations never pile up on concurrent
 // pipeline invocations (single ONNX session). Exactly one translation runs at
 // a time, in FIFO order, keeping the worker queue bounded.
@@ -144,6 +170,15 @@ async function ensureTranslator(
       }
       translator = (await pipeline("translation", payload.modelId, {
         quantized: true,
+        progress_callback: (info: { status?: string; progress?: number }) => {
+          if (info?.status === "progress" && typeof info.progress === "number") {
+            const total = Math.min(100, Math.round((doneLoadPasses * 100 + info.progress) / 2));
+            lastLoadPercent = Math.max(lastLoadPercent, total);
+            post({ type: "loading-progress", percent: lastLoadPercent });
+          } else if (info?.status === "done") {
+            doneLoadPasses = Math.min(2, doneLoadPasses + 1);
+          }
+        },
       })) as unknown as Translator;
     })();
   }
@@ -157,6 +192,7 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
       await ensureTranslator({ modelId, cacheHost, cacheTemplate, localModelPath });
       post({ type: "ready", id });
     } catch (err) {
+      console.error("Translation worker init failed:", err);
       post({ type: "error", id, message: errToString(err) });
     }
   },
@@ -196,6 +232,7 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
       }
       post({ type: "result", id, texts: translated });
     } catch (err) {
+      console.error("Translation worker translate failed:", err);
       post({ type: "error", id, message: errToString(err) });
     }
   },
@@ -231,6 +268,7 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
       );
       post({ type: "chunk-translated", id, translatedText: outputs?.[0]?.translation_text ?? "" });
     } catch (err) {
+      console.error("Translation worker translate-chunk failed:", err);
       post({ type: "error", id, message: errToString(err) });
     }
   },

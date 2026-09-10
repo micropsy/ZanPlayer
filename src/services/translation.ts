@@ -47,7 +47,8 @@ type WorkerResponse =
   | { type: "result"; id: string; texts: string[] }
   | { type: "chunk-translated"; id: string; translatedText: string }
   | { type: "error"; id: string; message: string }
-  | { type: "status"; id: string; payload: { loaded: boolean; loading: boolean } };
+  | { type: "status"; id: string; payload: { loaded: boolean; loading: boolean } }
+  | { type: "loading-progress"; percent: number };
 
 const cacheKey = (filename: string): string => {
   const templatePath = NLLB_CACHE_TEMPLATE.replace(/\{model\}/g, NLLB_MODEL_ID);
@@ -67,6 +68,11 @@ class TranslationService {
       });
       this.worker.onmessage = (event: MessageEvent) => {
         const data = event.data as WorkerResponse;
+        // Model-init progress (no request id): surface it live in the UI.
+        if (data.type === "loading-progress") {
+          useAppStore.getState().setTranslationLoadProgress(data.percent);
+          return;
+        }
         const entry = this.pending.get(data.id);
         if (!entry) return;
         this.pending.delete(data.id);
@@ -194,6 +200,33 @@ class TranslationService {
       }
       const percent = Math.min(100, 90 + ((i + 1) / NLLB_FILES.length) * 10);
       onProgress?.(percent, "preparing");
+    }
+  }
+
+  // Silently warm the NLLB model in the background at startup when it is
+  // already installed: warms the offline cache and loads the ONNX weights into
+  // the worker. Never downloads anything on its own (that stays opt-in via
+  // Settings). Progress is written to the store so the player can show a
+  // non-intrusive "Loading Translator..." indicator.
+  async autoLoadIfInstalled(onProgress?: (percent: number) => void): Promise<void> {
+    if (!isTauri()) return;
+    const s = useAppStore.getState();
+    if (s.translationModelLoading || s.translationModelAvailable) return;
+    s.setTranslationModelLoading(true);
+    s.setTranslationLoadProgress(0);
+    try {
+      if (!(await this.isModelAvailable())) {
+        // Model not downloaded - leave it to the Settings flow.
+        return;
+      }
+      await this.loadModel((percent) => {
+        onProgress?.(percent);
+        useAppStore.getState().setTranslationLoadProgress(percent);
+      });
+    } catch (err) {
+      console.error("Background translation model load failed:", err);
+    } finally {
+      useAppStore.getState().setTranslationModelLoading(false);
     }
   }
 

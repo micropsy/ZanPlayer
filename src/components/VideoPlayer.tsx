@@ -84,6 +84,8 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     setTranscriptionProgress,
     translationError,
     setTranslationError,
+    translationModelLoading,
+    translationLoadProgress,
   } = useAppStore();
 
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -552,10 +554,17 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     }
 
     if (!s.translationModelAvailable) {
-      setTranslationError(
-        "Translation model not installed. Open Settings → Translation Model to download it."
-      );
-      return;
+      // The worker may still be warming up (background startup load); give it a
+      // moment before claiming the model is missing.
+      if (!s.translationModelLoading) {
+        await translationService.autoLoadIfInstalled();
+      }
+      if (!useAppStore.getState().translationModelAvailable) {
+        setTranslationError(
+          "Translation model not installed or not ready yet. Open Settings → Translation Model to download it."
+        );
+        return;
+      }
     }
 
     if (original.cues.length === 0) {
@@ -578,7 +587,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     };
     current.setSubtitleTracks([...withoutTranslated, translatedTrack]);
     current.setActiveTranslatedTrackId(translatedTrack.id);
-    current.setSubtitleDisplayMode("translated");
+    // Switching to a target language auto-shows dual captions so the translation
+    // is visible immediately without a separate trip into the Caption Mode menu.
+    current.setSubtitleDisplayMode("dual");
     current.setShowSubtitles(true);
 
     setIsTranslating(true);
@@ -1048,6 +1059,12 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
               </div>
 
               <div className="flex items-center gap-3">
+                {translationModelLoading && (
+                  <div className="flex items-center gap-1.5 text-xs text-zan-cyan bg-zan-black/70 border border-zan-cyan/20 px-2.5 py-1 rounded-full">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Loading Translator... {Math.round(translationLoadProgress)}%
+                  </div>
+                )}
                 <div className="relative" data-cc-menu>
                   <button
                     onClick={() => {
@@ -1116,6 +1133,14 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
                                 key={lang.code}
                                 onClick={() => {
                                   setTargetLanguage(lang.code);
+                                  if (lang.code === "auto" || lang.code === "original") {
+                                    setSubtitleDisplayMode("original");
+                                  } else {
+                                    // Selecting a target language instantly switches
+                                    // captions to Dual so translated text appears right
+                                    // away instead of hiding behind the Caption Mode menu.
+                                    setSubtitleDisplayMode("dual");
+                                  }
                                   if (lang.code !== "auto" && subtitleTracks.length === 0 && !isTranscribing) {
                                     transcribeVideoRef.current();
                                   }
