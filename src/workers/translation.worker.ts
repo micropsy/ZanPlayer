@@ -131,12 +131,6 @@ type Translator = (
 let translator: Translator | null = null;
 let initPromise: Promise<void> | null = null;
 
-// Monotonic load progress for the "Loading Translator... %" indicator. The
-// NLLB ONNX model reports progress twice (encoder, then merged decoder), each
-// 0..100; mapping the second pass onto the 50..100 range keeps the bar rising.
-let doneLoadPasses = 0;
-let lastLoadPercent = 0;
-
 // Serialize model calls so chunk translations never pile up on concurrent
 // pipeline invocations (single ONNX session). Exactly one translation runs at
 // a time, in FIFO order, keeping the worker queue bounded.
@@ -168,11 +162,7 @@ async function ensureTranslator(
       env.backends.onnx.wasm.wasmPaths = new URL("../../onnx/", self.location.href).href;
       env.remoteHost = payload.cacheHost;
       env.remotePathTemplate = payload.cacheTemplate;
-      // Do NOT persist model files in the browser Cache API. Writing multi-hundred-
-      // MB ONNX files into the cache hangs/fails on WKWebView (macOS), leaving
-      // the load stuck at 100% forever with the model never becoming usable.
-      // Files are read straight from disk via the asset protocol instead.
-      env.useBrowserCache = false;
+      env.useBrowserCache = true;
       if (payload.localModelPath) {
         // Offline-only: load every model file from local disk via the injected
         // asset URL (convertFileSrc of the app-data dir). Never hit the network,
@@ -187,15 +177,6 @@ async function ensureTranslator(
       }
       translator = (await pipeline("translation", payload.modelId, {
         quantized: true,
-        progress_callback: (info: { status?: string; progress?: number }) => {
-          if (info?.status === "progress" && typeof info.progress === "number") {
-            const total = Math.min(100, Math.round((doneLoadPasses * 100 + info.progress) / 2));
-            lastLoadPercent = Math.max(lastLoadPercent, total);
-            post({ type: "loading-progress", percent: lastLoadPercent });
-          } else if (info?.status === "done") {
-            doneLoadPasses = Math.min(2, doneLoadPasses + 1);
-          }
-        },
       })) as unknown as Translator;
     })();
     initPromise.catch(() => {
@@ -203,8 +184,6 @@ async function ensureTranslator(
       // reset the load state so a later `init` request retries the pipeline.
       initPromise = null;
       translator = null;
-      doneLoadPasses = 0;
-      lastLoadPercent = 0;
     });
   }
   await initPromise;
