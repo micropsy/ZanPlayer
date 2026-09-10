@@ -17,6 +17,63 @@ export interface SubtitleStyle {
     alignment: "bottom" | "top";
 }
 
+// Full display names -> whisper ISO-639-1 codes. whisper.cpp's `g_lang` table only
+// resolves ISO codes ("en", "my") or its own full names ("english", "myanmar");
+// any other string yields lang_id == -1 and then indexes `ailang_2_tok[-1]` out of
+// bounds while building the prompt, silently breaking transcription. This is the
+// single sanitization point before a language reaches the Rust backend.
+const WHISPER_LANG_MAP: Record<string, string> = {
+    auto: "auto",
+    "auto-detect": "auto",
+    autodetect: "auto",
+    english: "en",
+    en: "en",
+    burmese: "my",
+    myanmar: "my",
+    my: "my",
+    spanish: "es",
+    espanol: "es",
+    es: "es",
+    french: "fr",
+    fr: "fr",
+    german: "de",
+    deu: "de",
+    de: "de",
+    japanese: "ja",
+    ja: "ja",
+    korean: "ko",
+    ko: "ko",
+    chinese: "zh",
+    "chinese (simplified)": "zh",
+    zh: "zh",
+    portuguese: "pt",
+    pt: "pt",
+    russian: "ru",
+    ru: "ru",
+    thai: "th",
+    th: "th",
+    vietnamese: "vi",
+    vi: "vi",
+    hindi: "hi",
+    hi: "hi",
+    arabic: "ar",
+    ar: "ar",
+};
+
+// Normalize a spoken-audio language value ("auto", "Burmese", "en", ...) into an
+// ISO-639-1 code Whisper understands, or `undefined` for auto-detection so the
+// backend never receives an unresolvable string.
+export function whisperLangCode(lang: string | undefined | null): string | undefined {
+    if (!lang) return undefined;
+    const key = lang.trim().toLowerCase();
+    const mapped = WHISPER_LANG_MAP[key];
+    if (mapped === "auto") return undefined;
+    if (mapped) return mapped;
+    // A clean lowercase 2-letter ISO code passes through; anything else falls
+    // back to auto-detection rather than breaking whisper.cpp's tokenizer.
+    return /^[a-z]{2}$/.test(key) ? key : undefined;
+}
+
 interface AppState {
     currentVideo: File | null;
     setCurrentVideo: (video: File | null) => void;

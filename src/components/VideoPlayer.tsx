@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { useAppStore, type SubtitleDisplayMode } from "../services/store";
+import { useAppStore, whisperLangCode, type SubtitleDisplayMode } from "../services/store";
 import {
   Play,
   Pause,
@@ -56,7 +56,6 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   const [ccMenuView, setCcMenuView] = useState<"root" | "source" | "language" | "mode">("root");
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
-  const [realtimeStreamingActive, setRealtimeStreamingActive] = useState(false);
   const {
     currentVideoUrl,
     currentVideoPath,
@@ -78,6 +77,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     setTargetLanguage,
     sourceLanguage,
     setSourceLanguage,
+    transcriptionMode,
     isTranscribing,
     setIsTranscribing,
     transcriptionProgress,
@@ -296,11 +296,10 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     setTranscriptionError(null);
     // Force Whisper to recognize in the explicitly selected spoken language; auto-detection otherwise.
     // The translation target is handled separately by the offline NLLB model, so the whisper
-    // translate-to-English mode is intentionally not enabled here.
-    const sourceLangToUse =
-      s.sourceLanguage === "auto" || s.sourceLanguage === "original"
-        ? undefined
-        : s.sourceLanguage;
+    // translate-to-English mode is intentionally not enabled here. Normalize through
+    // `whisperLangCode` so only valid ISO codes (or undefined for auto) reach Rust — a full
+    // display name like "Burmese" would otherwise be indexed out of bounds by whisper.cpp.
+    const sourceLangToUse = whisperLangCode(s.sourceLanguage);
     const label = !sourceLangToUse
       ? "Original"
       : SOURCE_LANGUAGES.find((l) => l.code === sourceLangToUse)?.name || sourceLangToUse;
@@ -310,7 +309,6 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     // Drop any translation state from a previous track/video.
     useAppStore.getState().clearTranslatedCues();
     // Reset realtime-streaming state for this video.
-    setRealtimeStreamingActive(false);
     realtimeStreamingActiveRef.current = false;
     realtimeStartedRef.current = false;
     streamingDoneRef.current = false;
@@ -393,7 +391,6 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     if (realtimeStartedRef.current) return;
     realtimeStartedRef.current = true;
     realtimeStreamingActiveRef.current = true;
-    setRealtimeStreamingActive(true);
     const node = videoRef.current;
     if (node && node.readyState >= 2) {
       node.play().catch(() => setIsPlaying(false));
@@ -566,11 +563,11 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   const currentSourceLanguageLabel =
     SOURCE_LANGUAGES.find((l) => l.code === sourceLanguage)?.name || sourceLanguage || "Auto-Detect";
 
-  // Pause playback while the *initial* transcription for a new video is running, then auto-resume
-  // In "realtime" streaming mode the overlay is dismissed (and playback started) on the
-  // first decoded chunk or once progress passes 2%, so the overlay no longer blocks playback.
-  const isInitialTranscribing =
-    isTranscribing && subtitleTracks.length === 0 && !realtimeStreamingActive;
+  // Playback blocking applies ONLY in "full" (batch) transcription mode, where
+  // subtitles are published after 100% completion. In "realtime" mode the video
+  // starts playing immediately (standard HTML5 autoplay once the source loads)
+  // and subtitles stream in as chunks are decoded — no overlay, no forced pause.
+  const isInitialTranscribing = isTranscribing && transcriptionMode === "full";
   useEffect(() => {
     if (isInitialTranscribing) {
       if (videoRef.current && !videoRef.current.paused) {
@@ -583,7 +580,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         videoRef.current.play().catch(() => setIsPlaying(false));
       }
     }
-  }, [isInitialTranscribing, isTranscribing, subtitleTracks.length, realtimeStreamingActive, setIsPlaying]);
+  }, [isInitialTranscribing, isTranscribing, subtitleTracks.length, transcriptionMode, setIsPlaying]);
 
   const handleToggleSubtitles = () => {
     const turningOn = !showSubtitles;
@@ -779,18 +776,13 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
               if (videoRef.current) {
                 videoRef.current.volume = volume;
                 videoRef.current.muted = isMuted;
-                // The initial-transcription pause can fire before the media is ready;
-                // don't let autoplay override it once metadata arrives, EXCEPT when
-                // realtime streaming has already unblocked the video.
-                if (
-                  pendingPlayRef.current &&
-                  (realtimeStreamingActive || !(isTranscribing && subtitleTracks.length === 0))
-                ) {
+                // Autoplay the moment media is ready unless we're in "full" batch
+                // transcription mode (which holds playback until subtitles exist).
+                // Realtime mode always starts playing immediately here.
+                if (pendingPlayRef.current && !isInitialTranscribing) {
                   pendingPlayRef.current = false;
                   videoRef.current.play().catch(() => setIsPlaying(false));
-                  if (realtimeStreamingActive) {
-                    autoPausedForTranscriptionRef.current = false;
-                  }
+                  autoPausedForTranscriptionRef.current = false;
                 } else if (pendingPlayRef.current) {
                   pendingPlayRef.current = false;
                   autoPausedForTranscriptionRef.current = true;
@@ -798,15 +790,10 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
               }
             }}
             onLoadedData={() => {
-              // Strict enforcement: once the frame data is actually available, if an
-              // initial transcription is still running, force the video to stay paused.
-              // (In realtime mode the overlay has already been dismissed, so skip.)
-              if (
-                videoRef.current &&
-                isTranscribing &&
-                subtitleTracks.length === 0 &&
-                !realtimeStreamingActive
-              ) {
+              // Strict enforcement for "full" mode: once frame data is actually
+              // available, if the initial batch transcription is still running,
+              // force the video to stay paused. Never fires in realtime mode.
+              if (videoRef.current && isInitialTranscribing) {
                 videoRef.current.pause();
                 autoPausedForTranscriptionRef.current = true;
               }

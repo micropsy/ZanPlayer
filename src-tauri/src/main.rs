@@ -407,6 +407,49 @@ async fn delete_translation_model(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// Normalize a spoken-audio language request into a string whisper.cpp accepts.
+// whisper.cpp's `g_lang` table only resolves ISO-639-1 codes ("en", "my") or its
+// own full names ("english", "myanmar"); any unrecognized string makes
+// `whisper_lang_id` return -1, and then `whisper_token_lang(ctx, -1)` indexes
+// `ailang_2_tok[-1]` out of bounds while building the prompt. As a safety net we
+// never forward an unknown value — we fall back to auto-detection instead.
+#[cfg(feature = "whisper")]
+fn whisper_language_code(language: Option<&str>) -> Option<String> {
+    let lang = match language {
+        Some(l) => l.trim().to_ascii_lowercase(),
+        None => return None,
+    };
+    if lang.is_empty() {
+        return None;
+    }
+    match lang.as_str() {
+        "auto" | "auto-detect" | "autodetect" => None,
+        "english" | "en" => Some("en".to_string()),
+        "burmese" | "myanmar" | "my" => Some("my".to_string()),
+        "spanish" | "espanol" | "es" => Some("es".to_string()),
+        "french" | "fr" => Some("fr".to_string()),
+        "german" | "deu" | "de" => Some("de".to_string()),
+        "japanese" | "ja" => Some("ja".to_string()),
+        "korean" | "ko" => Some("ko".to_string()),
+        "chinese" | "chinese (simplified)" | "zh" => Some("zh".to_string()),
+        "portuguese" | "pt" => Some("pt".to_string()),
+        "russian" | "ru" => Some("ru".to_string()),
+        "thai" | "th" => Some("th".to_string()),
+        "vietnamese" | "vi" => Some("vi".to_string()),
+        "hindi" | "hi" => Some("hi".to_string()),
+        "arabic" | "ar" => Some("ar".to_string()),
+        // A clean lowercase 2-letter ISO code passes straight through; any other
+        // value is dropped so whisper.cpp runs auto-detection rather than crashing.
+        other if other.len() == 2 && other.chars().all(|c| c.is_ascii_alphabetic()) => Some(other.to_string()),
+        other => {
+            eprintln!(
+                "zanplayer: ignoring unrecognized language '{other}', falling back to auto-detect"
+            );
+            None
+        }
+    }
+}
+
 #[tauri::command]
 #[cfg(feature = "whisper")]
 async fn transcribe_audio_local(
@@ -455,7 +498,10 @@ async fn transcribe_audio_local(
     params.set_single_segment(false);
     // Set translate to true if target_language is "en" (Whisper only supports translating to English)
     params.set_translate(target_language.as_deref() == Some("en"));
-    params.set_language(language.as_deref());
+    // Bind the normalized code for the lifetime of `params` (set_language borrows
+    // a &str tied to the params lifetime).
+    let lang_code = whisper_language_code(language.as_deref());
+    params.set_language(lang_code.as_deref());
     params.set_print_special(false);
     params.set_print_progress(false);
     params.set_print_realtime(false);
@@ -995,6 +1041,23 @@ mod tests {
         }
 
         assert_eq!(*calls.lock().unwrap(), vec![25, 75]);
+    }
+
+    #[test]
+    fn whisper_language_code_maps_valid_inputs_and_never_passes_bad_codes() {
+        // ISO codes pass through unchanged.
+        assert_eq!(super::whisper_language_code(Some("my")), Some("my".to_string()));
+        assert_eq!(super::whisper_language_code(Some("en")), Some("en".to_string()));
+        // Full display names are normalized to ISO codes.
+        assert_eq!(super::whisper_language_code(Some("Burmese")), Some("my".to_string()));
+        assert_eq!(super::whisper_language_code(Some("English")), Some("en".to_string()));
+        assert_eq!(super::whisper_language_code(Some("Auto-Detect")), None);
+        // Uppercase/case-mixed inputs are lowercased before matching.
+        assert_eq!(super::whisper_language_code(Some("MY")), Some("my".to_string()));
+        // Anything unresolvable falls back to auto-detection (never forwarded).
+        assert_eq!(super::whisper_language_code(Some("Klingon")), None);
+        assert_eq!(super::whisper_language_code(None), None);
+        assert_eq!(super::whisper_language_code(Some("")), None);
     }
 }
 
