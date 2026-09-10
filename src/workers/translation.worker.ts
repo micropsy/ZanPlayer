@@ -80,6 +80,11 @@ interface TranslatePayload {
   maxNewTokens?: number;
 }
 
+interface TranslateChunkPayload {
+  text: string;
+  tgtLang: string;
+}
+
 type Translator = (
   texts: string | string[],
   options: Record<string, unknown>
@@ -87,6 +92,19 @@ type Translator = (
 
 let translator: Translator | null = null;
 let initPromise: Promise<void> | null = null;
+
+// Serialize model calls so chunk translations never pile up on concurrent
+// pipeline invocations (single ONNX session). Exactly one translation runs at
+// a time, in FIFO order, keeping the worker queue bounded.
+let queueTail: Promise<unknown> = Promise.resolve();
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const run = queueTail.then(task, task);
+  queueTail = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
 
 function post(message: Record<string, unknown>): void {
   (self as unknown as { postMessage: (msg: Record<string, unknown>) => void }).postMessage(message);
@@ -143,6 +161,7 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
       if (!translator) {
         throw new Error("Translation model is not loaded yet");
       }
+      const model = translator;
       const sourceCode = toFloresCode(srcLang) ?? detectSourceFloresCode(texts);
       const targetCode = toFloresCode(tgtLang);
       if (!targetCode) {
@@ -156,17 +175,52 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
       const translated: string[] = [];
       for (let i = 0; i < texts.length; i += chunkSize) {
         const chunk = texts.slice(i, i + chunkSize);
-        const outputs = await translator(chunk, {
-          src_lang: sourceCode,
-          tgt_lang: targetCode,
-          max_new_tokens: maxNewTokens ?? DEFAULT_MAX_NEW_TOKENS,
-          num_beams: 1,
-        } as Record<string, unknown>);
+        const outputs = await enqueue(() =>
+          model(chunk, {
+            src_lang: sourceCode,
+            tgt_lang: targetCode,
+            max_new_tokens: maxNewTokens ?? DEFAULT_MAX_NEW_TOKENS,
+            num_beams: 1,
+          } as Record<string, unknown>)
+        );
         for (const out of outputs) {
           translated.push(out?.translation_text ?? "");
         }
       }
       post({ type: "result", id, texts: translated });
+    } catch (err) {
+      post({ type: "error", id, message: errToString(err) });
+    }
+  },
+  "translate-chunk": async (id, payload) => {
+    const { text, tgtLang } = payload as TranslateChunkPayload;
+    try {
+      if (!translator) {
+        throw new Error("Translation model is not loaded yet");
+      }
+      const model = translator;
+      if (!text) {
+        post({ type: "chunk-translated", id, translatedText: "" });
+        return;
+      }
+      const sourceCode = toFloresCode(undefined) ?? detectSourceFloresCode([text]);
+      const targetCode = toFloresCode(tgtLang);
+      if (!targetCode) {
+        throw new Error(`Unsupported target language: ${tgtLang}`);
+      }
+      if (sourceCode === targetCode) {
+        post({ type: "chunk-translated", id, translatedText: text });
+        return;
+      }
+      const outputs = await enqueue(() =>
+        model([text], {
+          src_lang: sourceCode,
+          tgt_lang: targetCode,
+          max_new_tokens: DEFAULT_MAX_NEW_TOKENS,
+          num_beams: 1,
+        } as Record<string, unknown>)
+      );
+      post({ type: "chunk-translated", id, translatedText: outputs?.[0]?.translation_text ?? "" });
     } catch (err) {
       post({ type: "error", id, message: errToString(err) });
     }

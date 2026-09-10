@@ -68,6 +68,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     activeTranslatedTrackId,
     subtitleDisplayMode,
     setSubtitleDisplayMode,
+    translatedCues,
     showSubtitles,
     setShowSubtitles,
     seekTo,
@@ -88,6 +89,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingPlayRef = useRef(false);
   const translateGenerationRef = useRef(0);
+  const inTranslationIdsRef = useRef<Set<string>>(new Set());
   const autoPausedForTranscriptionRef = useRef(false);
   // Realtime streaming state (only used in "realtime" transcription mode)
   const streamingTrackIdRef = useRef<string | null>(null);
@@ -270,6 +272,11 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
 
   const currentOriginalCue = getCurrentCue(originalTrack);
   const currentTranslatedCue = getCurrentCue(translatedTrack);
+  // Live translated caption: prefer the streamed chunk result keyed by the
+  // original cue id, falling back to a translated track (imported/older tracks).
+  const currentTranslatedText = currentOriginalCue
+    ? translatedCues[currentOriginalCue.id] ?? currentTranslatedCue?.text
+    : currentTranslatedCue?.text;
 
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
@@ -300,6 +307,8 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     const mode = useAppStore.getState().transcriptionMode;
     setIsTranscribing(true);
     setTranscriptionProgress(0);
+    // Drop any translation state from a previous track/video.
+    useAppStore.getState().clearTranslatedCues();
     // Reset realtime-streaming state for this video.
     setRealtimeStreamingActive(false);
     realtimeStreamingActiveRef.current = false;
@@ -337,6 +346,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         }
         st.setActiveSubtitleTrackId(trackId);
         st.setShowSubtitles(true);
+        // Fill translation gaps left by the live streaming (chunks that never got
+        // dispatched) once the authoritative, complete cue list is published.
+        void autoTranslateCuesRef.current(trackId, cues);
       } else {
         // Full (batch): only publish subtitles after 100% completion.
         const newTrack: SubtitleTrack = {
@@ -353,6 +365,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         useAppStore.getState().setActiveSubtitleTrackId(newTrack.id);
         useAppStore.getState().setActiveTranslatedTrackId(null);
         useAppStore.getState().setShowSubtitles(true);
+        // Full (batch) mode: transcription is 100% done, so stream translation
+        // chunk-by-chunk over the complete cue list.
+        void autoTranslateCuesRef.current(newTrack.id, cues);
       }
     } catch (err) {
       if (useAppStore.getState().currentVideoPath === videoPath) {
@@ -389,23 +404,96 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   }, []);
   startRealtimePlaybackRef.current = startRealtimePlayback;
 
-  // Translate the active subtitle track into the given language using the local NLLB-200 model
-  const translateSubtitles = async (code: string) => {
+  // Translate a single cue through the worker via "translate-chunk" and stream
+  // the result into translatedCues the moment "chunk-translated" arrives. Errors
+  // are rethrown so callers decide whether to surface them.
+  const translateSingleCue = async (cue: SubtitleCue): Promise<void> => {
     const s = useAppStore.getState();
-    const generation = ++translateGenerationRef.current;
+    const lang = s.targetLanguage;
+    if (!lang || lang === "auto" || lang === "original") return;
+    if (!s.translationModelAvailable) return;
+    const text = cue.text?.trim();
+    if (!text) return;
+    if (Object.prototype.hasOwnProperty.call(s.translatedCues, cue.id)) return;
+    if (inTranslationIdsRef.current.has(cue.id)) return;
+    inTranslationIdsRef.current.add(cue.id);
+    const gen = translateGenerationRef.current;
+    try {
+      const result = await translationService.translateChunk(text, lang);
+      if (translateGenerationRef.current !== gen) return;
+      useAppStore.getState().appendTranslatedCue({ id: cue.id, text: result });
+    } finally {
+      inTranslationIdsRef.current.delete(cue.id);
+    }
+  };
+  const translateSingleCueRef = useRef<(cue: SubtitleCue) => Promise<void>>(async () => {});
+  translateSingleCueRef.current = translateSingleCue;
 
+  const shouldAutoTranslate = (): boolean => {
+    const s = useAppStore.getState();
+    const lang = s.targetLanguage;
+    return (
+      !!lang &&
+      lang !== "auto" &&
+      lang !== "original" &&
+      s.translationModelAvailable &&
+      !!s.activeSubtitleTrackId
+    );
+  };
+  const shouldAutoTranslateRef = useRef(shouldAutoTranslate);
+  shouldAutoTranslateRef.current = shouldAutoTranslate;
+
+  // Translate a full cue list chunk-by-chunk (full mode: after 100% completes;
+  // realtime: fills any gaps once the authoritative track is reconciled).
+  const autoTranslateCues = async (_trackId: string, cues: SubtitleCue[]) => {
+    if (!shouldAutoTranslate()) return;
+    const gen = translateGenerationRef.current;
+    setIsTranslating(true);
+    try {
+      for (let i = 0; i < cues.length; i++) {
+        if (translateGenerationRef.current !== gen) return;
+        const cue = cues[i];
+        const currentMap = useAppStore.getState().translatedCues;
+        if (Object.prototype.hasOwnProperty.call(currentMap, cue.id)) continue;
+        try {
+          await translateSingleCueRef.current(cue);
+        } catch (err) {
+          if (translateGenerationRef.current !== gen) return;
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("Chunk translation error:", err);
+          setTranslationError(message);
+          break;
+        }
+      }
+    } finally {
+      if (translateGenerationRef.current === gen) {
+        setIsTranslating(false);
+      }
+    }
+  };
+  const autoTranslateCuesRef = useRef<
+    (trackId: string, cues: SubtitleCue[]) => Promise<void>
+  >(async () => {});
+  autoTranslateCuesRef.current = autoTranslateCues;
+
+  // Translate the active subtitle track into the given language using the local
+  // NLLB-200 model. Translation now streams chunk-by-chunk (one "translate-chunk"
+  // request per cue) so the UI never hangs on a monolithic batch. The spinner is
+  // dismissed as soon as the first chunk lands, while the rest fill in live.
+  const translateSubtitles = async (code: string) => {
+    const generation = ++translateGenerationRef.current;
     setTranslationError(null);
 
     if (code === "auto" || code === "original") {
-      const withoutTranslated = s.subtitleTracks.filter((t) => !t.isTranslated);
-      s.setSubtitleTracks(withoutTranslated);
-      s.setActiveTranslatedTrackId(null);
+      const s = useAppStore.getState();
+      s.clearTranslatedCues();
       s.setSubtitleDisplayMode("original");
       return;
     }
 
+    const s = useAppStore.getState();
     const original = s.subtitleTracks.find((t) => t.id === s.activeSubtitleTrackId);
-    if (!original || original.cues.length === 0) {
+    if (!original) {
       return;
     }
 
@@ -416,39 +504,50 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       return;
     }
 
+    if (original.cues.length === 0) {
+      // No subtitles yet (e.g. streaming just started): remember the target and
+      // let the realtime chunk flow translate as cues arrive.
+      return;
+    }
+
+    const langName = SUBTITLE_LANGUAGES.find((l) => l.code === code)?.name || code;
+    const current = useAppStore.getState();
+    current.clearTranslatedCues();
+    const withoutTranslated = current.subtitleTracks.filter((t) => !t.isTranslated);
+    const translatedTrack: SubtitleTrack = {
+      id: `track-translated-${Date.now()}`,
+      name: `Translated (${langName})`,
+      language: langName,
+      cues: [],
+      isTranslated: true,
+      sourceTrackId: original.id,
+    };
+    current.setSubtitleTracks([...withoutTranslated, translatedTrack]);
+    current.setActiveTranslatedTrackId(translatedTrack.id);
+    current.setSubtitleDisplayMode("translated");
+    current.setShowSubtitles(true);
+
     setIsTranslating(true);
-    try {
-      const texts = original.cues.map((c) => c.text);
-      const result = await translationService.translate(texts, "auto", code);
+    for (let i = 0; i < original.cues.length; i++) {
       if (translateGenerationRef.current !== generation) return;
-
-      const langName = SUBTITLE_LANGUAGES.find((l) => l.code === code)?.name || code;
-      const translatedTrack: SubtitleTrack = {
-        id: `track-translated-${Date.now()}`,
-        name: `Translated (${langName})`,
-        language: langName,
-        cues: original.cues.map((cue, i) => ({ ...cue, text: result[i] ?? cue.text })),
-        isTranslated: true,
-        sourceTrackId: original.id,
-      };
-
-      const current = useAppStore.getState();
-      const withoutTranslated = current.subtitleTracks.filter((t) => !t.isTranslated);
-      current.setSubtitleTracks([...withoutTranslated, translatedTrack]);
-      current.setActiveTranslatedTrackId(translatedTrack.id);
-      current.setSubtitleDisplayMode("translated");
-      current.setShowSubtitles(true);
-    } catch (err) {
-      if (translateGenerationRef.current !== generation) return;
-      const message = err instanceof Error ? err.message : String(err);
-      console.error("Translation error:", err);
-      setTranslationError(message);
-      setSubtitleDisplayMode("original");
-      setShowSubtitles(false);
-    } finally {
-      if (translateGenerationRef.current === generation) {
-        setIsTranslating(false);
+      try {
+        await translateSingleCueRef.current(original.cues[i]);
+        if (i === 0 && translateGenerationRef.current === generation) {
+          // First chunk translated: subtitles stream in, drop the spinner.
+          setIsTranslating(false);
+        }
+      } catch (err) {
+        if (translateGenerationRef.current !== generation) return;
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("Translation error:", err);
+        setTranslationError(message);
+        setSubtitleDisplayMode("original");
+        setShowSubtitles(false);
+        break;
       }
+    }
+    if (translateGenerationRef.current === generation) {
+      setIsTranslating(false);
     }
   };
 
@@ -598,6 +697,14 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         },
         cues
       );
+      // Realtime: dispatch each appended cue to the worker chunk-by-chunk so
+      // translated captions arrive as they're streamed. Errors are silent here —
+      // only the manual/full flows surface translation problems.
+      if (shouldAutoTranslateRef.current()) {
+        for (const cue of cues) {
+          void translateSingleCueRef.current(cue).catch(() => {});
+        }
+      }
     };
 
     const setupChunkListener = async () => {
@@ -722,50 +829,54 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
           )}
 
           {/* Subtitle Overlay */}
-          {showSubtitles && (currentOriginalCue || currentTranslatedCue) && (
-            <div
-              className={cn(
-                "absolute left-0 right-0 flex flex-col items-center px-4 pointer-events-none",
-                subtitleStyle.alignment === "bottom" ? "bottom-24" : "top-24"
-              )}
-            >
-              {subtitleDisplayMode !== "translated" && currentOriginalCue && (
-                <div
-                  className={cn(
-                    "px-6 py-2 rounded-lg text-center max-w-3xl",
-                    subtitleDisplayMode === "dual" && "mb-2"
-                  )}
-                  style={{
-                    fontFamily: subtitleStyle.fontName,
-                    fontSize: `${subtitleStyle.fontSize}px`,
-                    color: subtitleStyle.primaryColor,
-                    backgroundColor: subtitleStyle.backColor,
-                    textShadow: `2px 2px 4px ${subtitleStyle.outlineColor}`,
-                    fontWeight: subtitleStyle.bold ? "bold" : "normal",
-                    fontStyle: subtitleStyle.italic ? "italic" : "normal",
-                  }}
-                >
-                  {currentOriginalCue.text}
-                </div>
-              )}
-              {subtitleDisplayMode !== "original" && currentTranslatedCue && (
-                <div
-                  className="px-6 py-2 rounded-lg text-center max-w-3xl"
-                  style={{
-                    fontFamily: subtitleStyle.fontName,
-                    fontSize: `${subtitleStyle.fontSize}px`,
-                    color: "#FFD700",
-                    backgroundColor: subtitleStyle.backColor,
-                    textShadow: `2px 2px 4px ${subtitleStyle.outlineColor}`,
-                    fontWeight: subtitleStyle.bold ? "bold" : "normal",
-                    fontStyle: subtitleStyle.italic ? "italic" : "normal",
-                  }}
-                >
-                  {currentTranslatedCue.text}
-                </div>
-              )}
-            </div>
-          )}
+          {showSubtitles &&
+            (subtitleDisplayMode !== "translated" ? currentOriginalCue : currentTranslatedText) && (
+              <div
+                className={cn(
+                  "absolute left-0 right-0 flex flex-col items-center px-4 pointer-events-none",
+                  subtitleStyle.alignment === "bottom" ? "bottom-24" : "top-24"
+                )}
+              >
+                {subtitleDisplayMode !== "original" && currentTranslatedText && (
+                  <div
+                    className={cn(
+                      "px-6 py-2 rounded-lg text-center max-w-3xl",
+                      subtitleDisplayMode === "dual" && "mb-1"
+                    )}
+                    style={{
+                      fontFamily: subtitleStyle.fontName,
+                      fontSize: `${subtitleStyle.fontSize}px`,
+                      color: "#FFD700",
+                      backgroundColor: subtitleStyle.backColor,
+                      textShadow: `2px 2px 4px ${subtitleStyle.outlineColor}`,
+                      fontWeight: subtitleStyle.bold ? "bold" : "normal",
+                      fontStyle: subtitleStyle.italic ? "italic" : "normal",
+                    }}
+                  >
+                    {currentTranslatedText}
+                  </div>
+                )}
+                {subtitleDisplayMode !== "translated" && currentOriginalCue && (
+                  <div
+                    className="px-6 py-2 rounded-lg text-center max-w-3xl"
+                    style={{
+                      fontFamily: subtitleStyle.fontName,
+                      // Dual captions: translated headline on top, original below
+                      // rendered smaller and more subtle.
+                      fontSize: `${subtitleStyle.fontSize * (subtitleDisplayMode === "dual" ? 0.72 : 1)}px`,
+                      color: subtitleStyle.primaryColor,
+                      backgroundColor: subtitleStyle.backColor,
+                      opacity: subtitleDisplayMode === "dual" ? 0.85 : 1,
+                      textShadow: `2px 2px 4px ${subtitleStyle.outlineColor}`,
+                      fontWeight: subtitleStyle.bold ? "bold" : "normal",
+                      fontStyle: subtitleStyle.italic ? "italic" : "normal",
+                    }}
+                  >
+                    {currentOriginalCue.text}
+                  </div>
+                )}
+              </div>
+            )}
 
           {/* Initial Transcription Overlay */}
           {isInitialTranscribing && (

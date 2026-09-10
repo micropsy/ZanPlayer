@@ -45,6 +45,7 @@ const NLLB_TOTAL_BYTES = NLLB_FILES.reduce((sum, f) => sum + (NLLB_FILE_SIZES[f]
 type WorkerResponse =
   | { type: "ready"; id: string }
   | { type: "result"; id: string; texts: string[] }
+  | { type: "chunk-translated"; id: string; translatedText: string }
   | { type: "error"; id: string; message: string }
   | { type: "status"; id: string; payload: { loaded: boolean; loading: boolean } };
 
@@ -240,6 +241,24 @@ class TranslationService {
       throw new Error("Translation failed");
     }
     return response.texts;
+  }
+
+  // Translate a single cue and resolve as soon as the worker posts back its
+  // "chunk-translated" result. Used by the realtime/full streaming flows so the
+  // UI never blocks on one monolithic batch request.
+  async translateChunk(text: string, targetLang: string): Promise<string> {
+    await this.ensureReady();
+    const response = await this.request("translate-chunk", {
+      text,
+      tgtLang: targetLang,
+    });
+    if (response.type === "chunk-translated") {
+      return response.translatedText;
+    }
+    if (response.type === "error") {
+      throw new Error(response.message);
+    }
+    throw new Error("Chunk translation failed");
   }
 
   async status(): Promise<{ loaded: boolean; loading: boolean }> {

@@ -35,6 +35,9 @@ interface AppState {
     setActiveTranslatedTrackId: (id: string | null) => void;
     subtitleDisplayMode: SubtitleDisplayMode;
     setSubtitleDisplayMode: (mode: SubtitleDisplayMode) => void;
+    translatedCues: Record<string, string>;
+    appendTranslatedCue: (cue: { id: string; text: string }) => void;
+    clearTranslatedCues: () => void;
     showSubtitles: boolean;
     setShowSubtitles: (show: boolean) => void;
     currentTime: number;
@@ -118,6 +121,7 @@ export const useAppStore = create<AppState>()(
                     subtitleTracks: [],
                     activeSubtitleTrackId: null,
                     activeTranslatedTrackId: null,
+                    translatedCues: {},
                     isTranscribing: false,
                     transcriptionProgress: 0,
                 }),
@@ -155,6 +159,42 @@ export const useAppStore = create<AppState>()(
             setActiveTranslatedTrackId: (id: string | null) => set({ activeTranslatedTrackId: id }),
             subtitleDisplayMode: "dual",
             setSubtitleDisplayMode: (mode: SubtitleDisplayMode) => set({ subtitleDisplayMode: mode }),
+            translatedCues: {},
+            appendTranslatedCue: (cue: { id: string; text: string }) =>
+                set((state: AppState) => {
+                    // Keep the translated track (if one is active) in sync so the
+                    // sidebar/editor/export still see a concrete translated track,
+                    // while the overlay reads the raw map for live chunk updates.
+                    const original = state.subtitleTracks.find(
+                        (t) => t.id === state.activeSubtitleTrackId
+                    );
+                    const source = original?.cues.find((c) => c.id === cue.id);
+                    const subtitleTracks =
+                        source && state.activeTranslatedTrackId
+                            ? state.subtitleTracks.map((track: SubtitleTrack) => {
+                                  if (track.id !== state.activeTranslatedTrackId) return track;
+                                  const exists = track.cues.some((c) => c.id === cue.id);
+                                  return exists
+                                      ? {
+                                            ...track,
+                                            cues: track.cues.map((c) =>
+                                                c.id === cue.id ? { ...c, text: cue.text } : c
+                                            ),
+                                        }
+                                      : { ...track, cues: [...track.cues, { ...source, text: cue.text }] };
+                              })
+                            : state.subtitleTracks;
+                    return {
+                        subtitleTracks,
+                        translatedCues: { ...state.translatedCues, [cue.id]: cue.text },
+                    };
+                }),
+            clearTranslatedCues: () =>
+                set((state: AppState) => ({
+                    translatedCues: {},
+                    subtitleTracks: state.subtitleTracks.filter((t) => !t.isTranslated),
+                    activeTranslatedTrackId: null,
+                })),
             showSubtitles: true,
             setShowSubtitles: (show: boolean) => set({ showSubtitles: show }),
             currentTime: 0,
@@ -366,6 +406,7 @@ export const useAppStore = create<AppState>()(
                 targetLanguage: state.targetLanguage,
                 sourceLanguage: state.sourceLanguage,
                 transcriptionMode: state.transcriptionMode,
+                subtitleDisplayMode: state.subtitleDisplayMode,
             }),
         }
     )
