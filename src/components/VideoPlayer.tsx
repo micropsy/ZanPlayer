@@ -559,15 +559,32 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     }
 
     if (!s.translationModelAvailable) {
-      // The worker may still be warming up (background startup load); give it a
-      // moment before claiming the model is missing.
+      // Never fail instantly: picking a language while the model is mid-load
+      // (background warm-up or an in-progress download) must not dead-end the
+      // translation — wait for the load to finish instead.
+      if (!(await translationService.isModelAvailable())) {
+        setTranslationError(
+          "Translation model not installed. Open Settings → Translation Model to download it."
+        );
+        return;
+      }
       if (!s.translationModelLoading) {
-        await translationService.autoLoadIfInstalled();
+        await translationService.autoLoadIfInstalled().catch(() => {});
+      }
+      const deadline = Date.now() + 90_000;
+      while (
+        !useAppStore.getState().translationModelAvailable &&
+        useAppStore.getState().translationModelLoading &&
+        Date.now() < deadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
       }
       if (!useAppStore.getState().translationModelAvailable) {
-        setTranslationError(
-          "Translation model not installed or not ready yet. Open Settings → Translation Model to download it."
-        );
+        // Preserve a more specific error (e.g. a failed load surfaced by
+        // autoLoadIfInstalled) instead of overwriting it with a generic one.
+        if (!useAppStore.getState().translationError) {
+          setTranslationError("Translation model is still loading. Try again in a moment.");
+        }
         return;
       }
     }
@@ -610,9 +627,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         if (translateGenerationRef.current !== generation) return;
         const message = err instanceof Error ? err.message : String(err);
         console.error("Translation error:", err);
+        // Surface it on the video but keep the subtitles/display mode intact so
+        // the failure is visible without resetting the user's caption choices.
         setTranslationError(message);
-        setSubtitleDisplayMode("original");
-        setShowSubtitles(false);
         break;
       }
     }
@@ -934,6 +951,29 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
               </div>
             </div>
           )}
+
+          {/* Translation status pills: always visible on the video, never hidden
+              inside the CC menu, so a stuck/failed translation can't go unnoticed. */}
+          <div className="absolute top-4 right-4 flex flex-col items-end gap-2 z-20 pointer-events-none">
+            {translationError && (
+              <div className="max-w-xs px-3 py-1.5 rounded-lg bg-red-950/90 border border-red-500/50 text-red-300 text-xs shadow-lg">
+                {translationError}
+              </div>
+            )}
+            {!translationError && translationModelLoading && (
+              <div className="px-3 py-1.5 rounded-lg bg-zan-blue/30 border border-zan-blue/50 text-zan-cyan text-xs shadow-lg flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Loading Translator
+                {translationLoadProgress > 0 && ` ${Math.round(translationLoadProgress)}%`}
+              </div>
+            )}
+            {!translationError && !translationModelLoading && isTranslating && (
+              <div className="px-3 py-1.5 rounded-lg bg-zan-blue/30 border border-zan-blue/50 text-zan-cyan text-xs shadow-lg flex items-center gap-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Translating
+              </div>
+            )}
+          </div>
 
           {/* Subtitle Overlay */}
           {showSubtitles &&

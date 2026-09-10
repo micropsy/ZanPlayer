@@ -139,6 +139,15 @@ class TranslationService {
       }
       await this.warmModelCache(onProgress);
       await this.ensureReady();
+      // Self-test: prove the loaded pipeline actually produces output before
+      // marking the model available. A load that "succeeds" but can't run (e.g.
+      // broken asset protocol, unavailable ONNX session) would otherwise appear
+      // available while every chunk silently fails — exactly the "translations
+      // never appear" bug. Fail loudly here instead, on a clear error.
+      const probe = await this.translate(["hello"], "en", "my");
+      if (!probe?.[0]) {
+        throw new Error("Translation pipeline returned no output");
+      }
       useAppStore.getState().setTranslationModelAvailable(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -298,19 +307,39 @@ class TranslationService {
   // English inside the worker (Whisper's output); passing it explicitly here
   // pins eng_Latn for Whisper-generated tracks.
   async translateChunk(text: string, targetLang: string, srcLang?: string): Promise<string> {
-    await this.ensureReady();
-    const response = await this.request("translate-chunk", {
-      text,
-      tgtLang: targetLang,
-      ...(srcLang ? { srcLang } : {}),
-    });
-    if (response.type === "chunk-translated") {
-      return response.translatedText;
+    let attempts = 0;
+    while (true) {
+      attempts += 1;
+      try {
+        await this.ensureReady();
+        const response = await this.request("translate-chunk", {
+          text,
+          tgtLang: targetLang,
+          ...(srcLang ? { srcLang } : {}),
+        });
+        if (response.type === "chunk-translated") {
+          return response.translatedText;
+        }
+        if (response.type === "error") {
+          throw new Error(response.message);
+        }
+        throw new Error("Chunk translation failed");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (
+          attempts >= 2 ||
+          (message.length > 0 && !message.match(/not loaded|init|fetch|network|worker|cache|onnx/i))
+        ) {
+          throw err;
+        }
+        // Transient failure (stale worker init, aborted network/cache load):
+        // tear everything down so the next iteration re-initializes cleanly.
+        console.warn("Chunk translation failed, retrying with fresh init:", message);
+        this.readyPromise = null;
+        this.worker?.terminate();
+        this.worker = null;
+      }
     }
-    if (response.type === "error") {
-      throw new Error(response.message);
-    }
-    throw new Error("Chunk translation failed");
   }
 
   async status(): Promise<{ loaded: boolean; loading: boolean }> {
