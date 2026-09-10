@@ -1,10 +1,11 @@
 import { useAppStore } from "../services/store";
-import { Languages, Settings as SettingsIcon, CheckCircle2, Info, Download, Trash2, Loader2, RefreshCw } from "lucide-react";
+import { Languages, Settings as SettingsIcon, CheckCircle2, Info, Download, Trash2, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
-import { isTauri, TauriService } from "../services/tauri";
-import { check } from "@tauri-apps/plugin-updater";
-import { ask, message } from "@tauri-apps/plugin-dialog";
+import { isTauri } from "../services/tauri";
+import { checkForUpdates, installAndRestart } from "../services/updater";
+import { getVersion } from "@tauri-apps/api/app";
 import { translationService } from "../services/translation";
+import logoUrl from "../assets/icon.png";
 
 interface WhisperModel {
   id: string;
@@ -133,15 +134,20 @@ export const SettingsComponent = () => {
     translationError,
     transcriptionMode,
     setTranscriptionMode,
+    autoCheckUpdates,
+    setAutoCheckUpdates,
+    updateChecking,
+    isDownloading,
+    downloadProgress,
+    isUpdateReady,
+    updateNotice,
+    setUpdateNotice,
   } = useAppStore();
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [translationProgress, setTranslationProgress] = useState<number | null>(null);
   const [translationPhase, setTranslationPhase] = useState<"downloading" | "preparing" | null>(null);
-  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [isUpdateReady, setIsUpdateReady] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>("");
 
   useEffect(() => {
     loadDownloadedModels();
@@ -176,126 +182,23 @@ export const SettingsComponent = () => {
   };
 
   const handleCheckUpdate = async () => {
-    if (!isTauri()) return;
-    setIsCheckingUpdate(true);
-    setDownloadProgress(0);
-    setIsUpdateReady(false);
-    setIsDownloading(false);
-    try {
-      const update = await check();
-      if (update) {
-        const installNow = await ask(
-          `Version ${update.version} is available. Do you want to download it?`,
-          {
-            title: "Update Available",
-            kind: "info",
-            okLabel: "Download",
-            cancelLabel: "Later",
-          }
-        );
-        if (installNow) {
-          // Switch the button out for the live download-progress bar, then let
-          // the user decide when to relaunch once the download finishes.
-          setIsCheckingUpdate(false);
-          setIsDownloading(true);
-          let totalBytes = 0;
-          let downloadedBytes = 0;
-          try {
-            await update.downloadAndInstall((event) => {
-              if (event.event === "Started") {
-                totalBytes = event.data.contentLength ?? 0;
-                downloadedBytes = 0;
-                setDownloadProgress(0);
-              } else if (event.event === "Progress") {
-                downloadedBytes += event.data.chunkLength;
-                // Guard against division by zero when the server omits the total
-                // size; the bar simply stays at its current percentage.
-                if (totalBytes > 0) {
-                  const percent = Math.min(
-                    100,
-                    Math.round((downloadedBytes / totalBytes) * 100)
-                  );
-                  setDownloadProgress(percent);
-                }
-              } else if (event.event === "Finished") {
-                setDownloadProgress(100);
-                setIsDownloading(false);
-                setIsUpdateReady(true);
-              }
-            });
-          } catch (err) {
-            const detail =
-              err instanceof Error && err.message.trim()
-                ? err.message.trim()
-                : typeof err === "string"
-                  ? err
-                  : "Unknown error";
-            console.error("Update download failed:", err);
-            setIsDownloading(false);
-            setIsUpdateReady(false);
-            setDownloadProgress(0);
-            await message(`Update download failed. ${detail}`, {
-              title: "Update Error",
-              kind: "error",
-            }).catch(() => {});
-          }
-        }
-      } else {
-        await message("ZanPlayer is up to date.", {
-          title: "No Updates",
-          kind: "info",
-        });
-      }
-    } catch (error) {
-      console.error("Update check failed:", error);
-      setIsDownloading(false);
-      setIsUpdateReady(false);
-      setDownloadProgress(0);
-      const detail =
-        error instanceof Error && error.message.trim()
-          ? error.message.trim()
-          : typeof error === "string"
-            ? error
-            : "Unknown error";
-      if (detail.toLowerCase().includes("offline") || detail.toLowerCase().includes("no internet")) {
-        await message("No internet connection. Please check your connection and try again.", {
-          title: "Update Error",
-          kind: "error",
-        }).catch(() => {});
-      } else {
-        await message(`Unable to check for updates. ${detail}`, {
-          title: "Update Error",
-          kind: "error",
-        }).catch(() => {});
-      }
-    } finally {
-      if (isTauri()) setIsCheckingUpdate(false);
-    }
+    await checkForUpdates("manual");
   };
 
-  const handleInstallUpdate = async () => {
+  useEffect(() => {
     if (!isTauri()) return;
-    try {
-      // Equivalent to `relaunch()` from @tauri-apps/plugin-process: the bundled
-      // Rust `relaunch_app` command exits the process and the updater applies the
-      // staged update on the next launch.
-      await TauriService.relaunchApp();
-    } catch (error) {
-      const detail =
-        error instanceof Error && error.message.trim()
-          ? error.message.trim()
-          : typeof error === "string"
-            ? error
-            : "Unknown error";
-      console.error("Relaunch failed:", error);
-      setIsUpdateReady(false);
-      setIsDownloading(false);
-      setDownloadProgress(0);
-      await message(`Unable to restart the app. ${detail}`, {
-        title: "Update Error",
-        kind: "error",
-      }).catch(() => {});
-    }
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
+  // Auto-dismiss the inline "up to date" notice after a few seconds.
+  useEffect(() => {
+    if (!updateNotice) return;
+    const timer = setTimeout(() => setUpdateNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [updateNotice, setUpdateNotice]);
+
+  const handleInstallUpdate = async () => {
+    await installAndRestart();
   };
 
   const currentModelName = whisperModels.find(m => m.id === whisperModel)?.name || whisperModel;
@@ -332,46 +235,62 @@ export const SettingsComponent = () => {
           Updates
         </label>
         {isTauri() ? (
-          isDownloading ? (
-            <div className="space-y-2">
-              <p className={`text-sm font-medium ${valueClass(theme)}`}>
-                Downloading update... {downloadProgress}%
-              </p>
-              <div className="w-full bg-gray-700 rounded-full h-2.5">
-                <div
-                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-200 ease-out"
-                  style={{ width: `${downloadProgress}%` }}
-                />
+          <>
+            <div className={`p-4 rounded-xl border flex items-center justify-between gap-3 ${card(theme)}`}>
+              <div className="space-y-0.5">
+                <span className={`block text-sm font-medium ${valueClass(theme)}`}>
+                  Automatically check for updates on startup
+                </span>
+                <span className={`block text-xs ${labelClass(theme)}`}>
+                  ZanPlayer silently looks for new versions when it launches.
+                </span>
               </div>
+              <Toggle on={autoCheckUpdates} onClick={() => setAutoCheckUpdates(!autoCheckUpdates)} />
             </div>
-          ) : isUpdateReady ? (
-            <button
-              onClick={handleInstallUpdate}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-medium transition-all"
-            >
-              <Download className="w-4 h-4" />
-              Install & Restart
-            </button>
-          ) : (
-            <button
-              onClick={handleCheckUpdate}
-              disabled={isCheckingUpdate}
-              aria-busy={isCheckingUpdate}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {isCheckingUpdate ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Checking...
-                </>
-              ) : (
-                <>
-                  <RefreshCw className="w-4 h-4" />
-                  Check for Updates
-                </>
-              )}
-            </button>
-          )
+            {isDownloading ? (
+              <div className="space-y-2">
+                <p className={`text-sm font-medium ${valueClass(theme)}`}>
+                  Downloading update... {downloadProgress}%
+                </p>
+                <div className="w-full bg-gray-700 rounded-full h-2.5">
+                  <div
+                    className="bg-blue-600 h-2.5 rounded-full transition-all duration-200 ease-out"
+                    style={{ width: `${downloadProgress}%` }}
+                  />
+                </div>
+              </div>
+            ) : isUpdateReady ? (
+              <button
+                onClick={handleInstallUpdate}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-medium transition-all"
+              >
+                <Download className="w-4 h-4" />
+                Install & Restart
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={handleCheckUpdate}
+                  disabled={updateChecking}
+                  aria-busy={updateChecking}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {updateChecking ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4" />
+                  )}
+                  <span>{updateChecking ? "Checking..." : "Check for Updates"}</span>
+                </button>
+                {updateNotice && (
+                  <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-green-600/40 bg-green-600/10 text-green-400 text-sm">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>{updateNotice}</span>
+                  </div>
+                )}
+              </>
+            )}
+          </>
         ) : (
           <p className={`text-xs ${labelClass(theme)}`}>
             Update feature is only available in the desktop app.
@@ -1013,6 +932,32 @@ export const SettingsComponent = () => {
               </span>
             </span>
           </button>
+        </div>
+      </section>
+
+      {/* About */}
+      <section className="space-y-2">
+        <h3 className={`text-sm font-medium flex items-center gap-2 ${labelClass(theme)}`}>
+          <Info className="w-4 h-4 opacity-70" />
+          About
+        </h3>
+        <div className={`p-8 rounded-2xl border flex flex-col items-center text-center gap-3 ${card(theme)}`}>
+          <img src={logoUrl} alt="ZanPlayer logo" className="w-20 h-20 rounded-2xl shadow-xl" />
+          <div>
+            <h4 className={`text-xl font-bold ${valueClass(theme)}`}>ZanPlayer</h4>
+            <p className={`text-sm mt-1 ${labelClass(theme)}`}>
+              Version {appVersion || "—"}
+            </p>
+          </div>
+          <a
+            href="https://github.com/micropsy/ZanPlayer/releases"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm text-zan-cyan hover:underline"
+          >
+            Check Release Notes
+            <ExternalLink className="w-4 h-4" />
+          </a>
         </div>
       </section>
     </div>

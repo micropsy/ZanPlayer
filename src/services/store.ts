@@ -128,6 +128,8 @@ interface AppState {
     setTargetLanguage: (lang: string) => void;
     sourceLanguage: string;
     setSourceLanguage: (lang: string) => void;
+    autoCheckUpdates: boolean;
+    setAutoCheckUpdates: (check: boolean) => void;
     isTranscribing: boolean;
     setIsTranscribing: (val: boolean) => void;
     transcriptionProgress: number;
@@ -161,6 +163,20 @@ interface AppState {
     // Sidebar
     sidebarVisible: boolean;
     setSidebarVisible: (visible: boolean) => void;
+
+    // Updater (shared by manual Settings flow + background startup check)
+    updateChecking: boolean;
+    setUpdateChecking: (checking: boolean) => void;
+    isDownloading: boolean;
+    setIsDownloading: (downloading: boolean) => void;
+    downloadProgress: number;
+    setDownloadProgress: (progress: number) => void;
+    isUpdateReady: boolean;
+    setIsUpdateReady: (ready: boolean) => void;
+    updateVersion: string | null;
+    setUpdateVersion: (version: string | null) => void;
+    updateNotice: string | null;
+    setUpdateNotice: (notice: string | null) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -342,6 +358,8 @@ export const useAppStore = create<AppState>()(
             setTargetLanguage: (lang: string) => set({ targetLanguage: lang }),
             sourceLanguage: "auto",
             setSourceLanguage: (lang: string) => set({ sourceLanguage: lang }),
+            autoCheckUpdates: true,
+            setAutoCheckUpdates: (check: boolean) => set({ autoCheckUpdates: check }),
             isTranscribing: false,
             setIsTranscribing: (val: boolean) => set({ isTranscribing: val }),
             transcriptionProgress: 0,
@@ -457,6 +475,20 @@ export const useAppStore = create<AppState>()(
             // Sidebar
             sidebarVisible: true,
             setSidebarVisible: (visible: boolean) => set({ sidebarVisible: visible }),
+
+            // Updater
+            updateChecking: false,
+            setUpdateChecking: (checking: boolean) => set({ updateChecking: checking }),
+            isDownloading: false,
+            setIsDownloading: (downloading: boolean) => set({ isDownloading: downloading }),
+            downloadProgress: 0,
+            setDownloadProgress: (progress: number) => set({ downloadProgress: progress }),
+            isUpdateReady: false,
+            setIsUpdateReady: (ready: boolean) => set({ isUpdateReady: ready }),
+            updateVersion: null,
+            setUpdateVersion: (version: string | null) => set({ updateVersion: version }),
+            updateNotice: null,
+            setUpdateNotice: (notice: string | null) => set({ updateNotice: notice }),
         }),
         {
             name: "zanplayer-storage",
@@ -469,6 +501,7 @@ export const useAppStore = create<AppState>()(
                 sourceLanguage: state.sourceLanguage,
                 transcriptionMode: state.transcriptionMode,
                 subtitleDisplayMode: state.subtitleDisplayMode,
+                autoCheckUpdates: state.autoCheckUpdates,
             }),
         }
     )

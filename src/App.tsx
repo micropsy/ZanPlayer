@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { Menu, FileVideo } from 'lucide-react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { TauriService, isTauri } from './services/tauri';
+import { checkForUpdates } from './services/updater';
 
 // Helper functions to check file types
 const isVideoFile = (fileName: string): boolean => {
@@ -153,6 +154,17 @@ function App() {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     document.documentElement.classList.toggle('light', theme === 'light');
   }, [theme]);
+
+  // Silent background update check on startup. Keep it completely invisible
+  // when there is nothing new; only prompt if an update is actually found.
+  const startupUpdateCheckRef = useRef(false);
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (startupUpdateCheckRef.current) return;
+    startupUpdateCheckRef.current = true;
+    if (!useAppStore.getState().autoCheckUpdates) return;
+    void checkForUpdates('background');
+  }, []);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
