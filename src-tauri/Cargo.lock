@@ -5854,7 +5854,7 @@ dependencies = [
 
 [[package]]
 name = "zanplayer"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "directories-next",
  "futures-util",
