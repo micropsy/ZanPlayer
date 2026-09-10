@@ -99,6 +99,11 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   const realtimeStreamingActiveRef = useRef(false);
   const streamingDoneRef = useRef(false);
   const pendingChunkCuesRef = useRef<SubtitleCue[]>([]);
+  // Realtime translation queue: cues whose translation was deferred because the
+  // NLLB model wasn't available yet. Redispatched the moment it becomes ready so
+  // streamed subtitles are never silently skipped.
+  const stalledRealtimeCuesRef = useRef<SubtitleCue[]>([]);
+  const translationSpinnerShownRef = useRef(false);
   const startRealtimePlaybackRef = useRef<() => void>(() => {});
 
   const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
@@ -313,6 +318,8 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     realtimeStartedRef.current = false;
     streamingDoneRef.current = false;
     pendingChunkCuesRef.current = [];
+    stalledRealtimeCuesRef.current = [];
+    translationSpinnerShownRef.current = false;
     streamingPathRef.current = videoPath;
     streamingTrackLabelRef.current = label;
     streamingTrackIdRef.current = mode === "realtime" ? `track-${Date.now()}` : null;
@@ -334,6 +341,29 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
         pendingChunkCuesRef.current = [];
         const st = useAppStore.getState();
         const exists = st.subtitleTracks.some((t) => t.id === trackId);
+        // Whisper emits fresh UUIDs for the authoritative cue list, so carry over
+        // any already-translated text (keyed by streamed-cue id) onto the reconciled
+        // ids. Without this every translated caption would vanish at 100% and the
+        // gap-fill below would re-translate the WHOLE video (duplicate NLLB work and
+        // a long stretch with no translated captions while playing).
+        const streamedCues = st.subtitleTracks.find((t) => t.id === trackId)?.cues;
+        if (streamedCues && streamedCues.length > 0) {
+          const carry: Record<string, string> = {};
+          const translated = st.translatedCues;
+          for (const authoritative of cues) {
+            const hit = streamedCues.find(
+              (c) =>
+                Math.abs(c.startTime - authoritative.startTime) < 0.25 &&
+                Math.abs(c.endTime - authoritative.endTime) < 0.25
+            );
+            if (hit && Object.prototype.hasOwnProperty.call(translated, hit.id)) {
+              carry[authoritative.id] = translated[hit.id];
+            }
+          }
+          if (Object.keys(carry).length > 0) {
+            st.mergeTranslatedCues(carry);
+          }
+        }
         if (exists) {
           st.setTrackCues(trackId, cues);
         } else {
@@ -419,12 +449,39 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       const result = await translationService.translateChunk(text, lang);
       if (translateGenerationRef.current !== gen) return;
       useAppStore.getState().appendTranslatedCue({ id: cue.id, text: result });
+      // Realtime mode: the very first streamed chunk landing means the live
+      // "Translating..." state can drop; everything after fills in transparently.
+      if (realtimeStreamingActiveRef.current || realtimeStartedRef.current) {
+        setIsTranslating(false);
+      }
     } finally {
       inTranslationIdsRef.current.delete(cue.id);
     }
   };
   const translateSingleCueRef = useRef<(cue: SubtitleCue) => Promise<void>>(async () => {});
   translateSingleCueRef.current = translateSingleCue;
+
+  // Dispatch a batch of cues to the chunk translator (fire-and-forget; realtime
+  // flows want zero backpressure on the queue).
+  const dispatchCuesToTranslate = (cues: SubtitleCue[]) => {
+    for (const cue of cues) {
+      void translateSingleCueRef.current(cue).catch(() => {});
+    }
+  };
+  const dispatchCuesToTranslateRef = useRef(dispatchCuesToTranslate);
+  dispatchCuesToTranslateRef.current = dispatchCuesToTranslate;
+
+  // Re-dispatch cues that were stalled waiting for the NLLB model to become
+  // available. Called from the store-subscription effect below.
+  const flushRealtimeDispatches = () => {
+    const queued = stalledRealtimeCuesRef.current;
+    stalledRealtimeCuesRef.current = [];
+    if (queued.length > 0) {
+      dispatchCuesToTranslateRef.current(queued);
+    }
+  };
+  const flushRealtimeDispatchesRef = useRef(flushRealtimeDispatches);
+  flushRealtimeDispatchesRef.current = flushRealtimeDispatches;
 
   const shouldAutoTranslate = (): boolean => {
     const s = useAppStore.getState();
@@ -698,9 +755,15 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       // translated captions arrive as they're streamed. Errors are silent here —
       // only the manual/full flows surface translation problems.
       if (shouldAutoTranslateRef.current()) {
-        for (const cue of cues) {
-          void translateSingleCueRef.current(cue).catch(() => {});
+        if (!translationSpinnerShownRef.current) {
+          translationSpinnerShownRef.current = true;
+          setIsTranslating(true);
         }
+        dispatchCuesToTranslateRef.current(cues);
+      } else {
+        // Model not ready yet: keep the cues so they're translated the moment
+        // it becomes available instead of being dropped forever.
+        stalledRealtimeCuesRef.current.push(...cues);
       }
     };
 
@@ -736,6 +799,19 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       unlisten?.();
       window.clearInterval(flushTimer);
     };
+  }, []);
+
+  // Realtime: cues that streamed while the NLLB model wasn't available yet are
+  // held in `stalledRealtimeCuesRef`; the moment the model flips to available,
+  // dispatch them all so translated captions follow the stream instead of
+  // waiting for the end-of-video gap-fill.
+  useEffect(() => {
+    const unsubscribe = useAppStore.subscribe((state, prevState) => {
+      if (state.translationModelAvailable && !prevState.translationModelAvailable) {
+        flushRealtimeDispatchesRef.current();
+      }
+    });
+    return unsubscribe;
   }, []);
 
   useEffect(() => {

@@ -94,6 +94,7 @@ interface AppState {
     setSubtitleDisplayMode: (mode: SubtitleDisplayMode) => void;
     translatedCues: Record<string, string>;
     appendTranslatedCue: (cue: { id: string; text: string }) => void;
+    mergeTranslatedCues: (map: Record<string, string>) => void;
     clearTranslatedCues: () => void;
     showSubtitles: boolean;
     setShowSubtitles: (show: boolean) => void;
@@ -251,6 +252,10 @@ export const useAppStore = create<AppState>()(
                     translatedCues: {},
                     subtitleTracks: state.subtitleTracks.filter((t) => !t.isTranslated),
                     activeTranslatedTrackId: null,
+                })),
+            mergeTranslatedCues: (map: Record<string, string>) =>
+                set((state: AppState) => ({
+                    translatedCues: { ...state.translatedCues, ...map },
                 })),
             showSubtitles: true,
             setShowSubtitles: (show: boolean) => set({ showSubtitles: show }),

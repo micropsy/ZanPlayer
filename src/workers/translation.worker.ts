@@ -5,6 +5,11 @@ export const NLLB_CACHE_HOST = "https://offline.local/";
 export const NLLB_CACHE_TEMPLATE = "{model}";
 
 export const DEFAULT_MAX_NEW_TOKENS = 128;
+// Antidote for the NLLB repetition-loops seen in production (e.g. a single
+// Burmese syllable repeated forever: "ကက်ကက်ကက်..."). These decode-time
+// constraints are applied to every translation, for every language pair.
+export const DEFAULT_REPETITION_PENALTY = 1.5;
+export const DEFAULT_NO_REPEAT_NGRAM_SIZE = 3;
 
 const FLORES_TARGET: Record<string, string> = {
   en: "eng_Latn",
@@ -181,6 +186,8 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
             tgt_lang: targetCode,
             max_new_tokens: maxNewTokens ?? DEFAULT_MAX_NEW_TOKENS,
             num_beams: 1,
+            repetition_penalty: DEFAULT_REPETITION_PENALTY,
+            no_repeat_ngram_size: DEFAULT_NO_REPEAT_NGRAM_SIZE,
           } as Record<string, unknown>)
         );
         for (const out of outputs) {
@@ -218,6 +225,8 @@ const handlers: Record<string, (id: string, payload: unknown) => Promise<void>> 
           tgt_lang: targetCode,
           max_new_tokens: DEFAULT_MAX_NEW_TOKENS,
           num_beams: 1,
+          repetition_penalty: DEFAULT_REPETITION_PENALTY,
+          no_repeat_ngram_size: DEFAULT_NO_REPEAT_NGRAM_SIZE,
         } as Record<string, unknown>)
       );
       post({ type: "chunk-translated", id, translatedText: outputs?.[0]?.translation_text ?? "" });
