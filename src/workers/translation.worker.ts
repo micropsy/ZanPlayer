@@ -194,6 +194,14 @@ async function ensureTranslator(
         },
       })) as unknown as Translator;
     })();
+    initPromise.catch(() => {
+      // A failed load must not poison the worker for the rest of the session:
+      // reset the load state so a later `init` request retries the pipeline.
+      initPromise = null;
+      translator = null;
+      doneLoadPasses = 0;
+      lastLoadPercent = 0;
+    });
   }
   await initPromise;
 }

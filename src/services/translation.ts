@@ -224,7 +224,13 @@ class TranslationService {
         useAppStore.getState().setTranslationLoadProgress(percent);
       });
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       console.error("Background translation model load failed:", err);
+      // Never fail silently: the player shows this so the user knows why
+      // translated captions aren't appearing and can act on it.
+      useAppStore.getState().setTranslationError(
+        `Translation model failed to load: ${message}`
+      );
     } finally {
       useAppStore.getState().setTranslationModelLoading(false);
     }
@@ -254,7 +260,17 @@ class TranslationService {
         }
       })();
     }
-    await this.readyPromise;
+    try {
+      await this.readyPromise;
+    } catch (err) {
+      // A failed init must not lock translation out for the whole session:
+      // drop the cached promise (and any stale worker init state) so the next
+      // translation attempt re-initializes from scratch.
+      this.readyPromise = null;
+      this.worker?.terminate();
+      this.worker = null;
+      throw err;
+    }
   }
 
   async translate(

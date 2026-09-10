@@ -88,6 +88,9 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   // streamed subtitles are never silently skipped.
   const stalledRealtimeCuesRef = useRef<SubtitleCue[]>([]);
   const translationSpinnerShownRef = useRef(false);
+  // Dedupes the visible translation-error notice: reset whenever a chunk
+  // translation lands or a new translation session starts.
+  const translationErrorShownRef = useRef(false);
   const startRealtimePlaybackRef = useRef<() => void>(() => {});
 
   const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
@@ -452,13 +455,24 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   translateSingleCueRef.current = translateSingleCue;
 
   // Dispatch a batch of cues to the chunk translator (fire-and-forget; realtime
-  // flows want zero backpressure on the queue). Errors are logged rather than
-  // swallowed so a failing NLLB session is never invisible.
+  // flows want zero backpressure on the queue). Failures are logged and surfaced
+  // once in the UI so a broken NLLB session is never invisible.
   const dispatchCuesToTranslate = (cues: SubtitleCue[]) => {
     for (const cue of cues) {
-      void translateSingleCueRef.current(cue).catch((err) => {
-        console.error("Realtime chunk translation failed:", err);
-      });
+      void translateSingleCueRef.current(cue)
+        .then(() => {
+          if (inTranslationIdsRef.current.size === 0) {
+            translationErrorShownRef.current = false;
+          }
+        })
+        .catch((err) => {
+          if (!translationErrorShownRef.current) {
+            translationErrorShownRef.current = true;
+            const message = err instanceof Error ? err.message : String(err);
+            useAppStore.getState().setTranslationError(`Translation failed: ${message}`);
+          }
+          console.error("Realtime chunk translation failed:", err);
+        });
     }
   };
   const dispatchCuesToTranslateRef = useRef(dispatchCuesToTranslate);
@@ -818,11 +832,27 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
   // Realtime: cues that streamed while the NLLB model wasn't available yet are
   // held in `stalledRealtimeCuesRef`; the moment the model flips to available,
   // dispatch them all so translated captions follow the stream instead of
-  // waiting for the end-of-video gap-fill.
+  // waiting for the end-of-video gap-fill. Also covers batch/full mode and any
+  // late warm-up of the model (e.g. background load finishing after a video was
+  // already transcribed): re-translate the active track so translations appear
+  // without requiring the user to revisit the CC menu.
   useEffect(() => {
     const unsubscribe = useAppStore.subscribe((state, prevState) => {
       if (state.translationModelAvailable && !prevState.translationModelAvailable) {
         flushRealtimeDispatchesRef.current();
+        const s = useAppStore.getState();
+        const track = s.subtitleTracks.find((t) => t.id === s.activeSubtitleTrackId);
+        const lang = s.targetLanguage;
+        const wantsTranslation = track && !!lang && lang !== "auto" && lang !== "original";
+        // While a realtime stream is live, the flush above already translates the
+        // stalled cues; a full re-translate would just wipe/rebuild the same map.
+        // Only re-translate when streaming is finished (batch/full mode or a video
+        // that reconciled before the model finished warming up).
+        const stillStreaming =
+          streamingTrackIdRef.current !== null && !streamingDoneRef.current;
+        if (wantsTranslation && track!.cues.length > 0 && !stillStreaming) {
+          void translateSubtitlesRef.current(lang);
+        }
       }
     });
     return unsubscribe;
