@@ -483,7 +483,18 @@ async fn transcribe_audio_local(
             },
         );
     });
-    let progress_user_data = Box::into_raw(progress_closure) as *mut std::ffi::c_void;
+    // whisper.cpp copies the callback `user_data` pointers out of the params struct,
+    // so the word at `user_data` must really be a `Box<dyn FnMut>` fat pointer whose
+    // (data, vtable) pair stays valid for the whole process. A single-box
+    // `Box::into_raw(Box<dyn FnMut>)` cast to `*mut c_void` keeps only the data
+    // pointer, so the trampoline reading `*mut Box<dyn FnMut>` would reinterpret the
+    // closure's captured `AppHandle` bytes as a (data, vtable) pair and call through
+    // a garbage vtable (EXC_BAD_ACCESS / instruction abort into a non-executable
+    // stack region). Double-boxing mirrors whisper-rs's `set_segment_callback_safe`:
+    // leaking a thin `Box<Box<dyn FnMut>>` yields a heap address that points at the
+    // real fat pointer, and is never freed while the process runs.
+    let progress_user_data =
+        Box::into_raw(Box::new(progress_closure)) as *mut std::ffi::c_void;
 
     unsafe extern "C" fn progress_trampoline(
         _ctx: *mut whisper_rs::WhisperSysContext,
@@ -943,6 +954,48 @@ async fn process_dropped_video(
 #[tauri::command]
 fn relaunch_app(app: AppHandle) {
     tauri::process::restart(&app.env());
+}
+
+#[cfg(test)]
+mod tests {
+    // Regression test for the whisper progress-callback vtable corruption.
+    //
+    // The production trampoline receives `user_data: *mut c_void` and reinterprets
+    // it as `&mut Box<dyn FnMut(i32) + Send>`. The callback pointer must therefore
+    // point at a *real* fat pointer (a heap `Box<dyn FnMut>`), NOT at the closure
+    // data a single-box `Box::into_raw(Box<dyn FnMut>)` would produce. Reproduces
+    // the exact double-boxing used in `transcribe_audio_local`.
+    unsafe extern "C" fn progress_trampoline(
+        _ctx: *mut std::ffi::c_void,
+        _state: *mut std::ffi::c_void,
+        progress: std::os::raw::c_int,
+        user_data: *mut std::ffi::c_void,
+    ) {
+        let closure: &mut Box<dyn FnMut(i32) + Send + 'static> =
+            &mut *(user_data as *mut _);
+        closure(progress);
+    }
+
+    #[test]
+    fn double_boxed_progress_callback_calls_through_valid_vtable() {
+        use std::sync::{Arc, Mutex};
+
+        let calls: Arc<Mutex<Vec<i32>>> = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_closure = calls.clone();
+
+        let progress_closure: Box<dyn FnMut(i32) + Send + 'static> = Box::new(move |p| {
+            calls_for_closure.lock().unwrap().push(p);
+        });
+        let user_data =
+            Box::into_raw(Box::new(progress_closure)) as *mut std::ffi::c_void;
+
+        unsafe {
+            progress_trampoline(std::ptr::null_mut(), std::ptr::null_mut(), 25, user_data);
+            progress_trampoline(std::ptr::null_mut(), std::ptr::null_mut(), 75, user_data);
+        }
+
+        assert_eq!(*calls.lock().unwrap(), vec![25, 75]);
+    }
 }
 
 fn main() {
