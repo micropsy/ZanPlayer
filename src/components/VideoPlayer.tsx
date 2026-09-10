@@ -793,14 +793,19 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
           </div>
 
           {/* Transcribing Indicator */}
-          {isTranscribing && (
-            <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 bg-black/70 backdrop-blur rounded-full border border-gray-700 shadow-xl">
-              <Loader2 className="w-4 h-4 animate-spin text-zan-cyan" />
-              <span className="text-sm text-white">
-                Transcribing... {Math.round(transcriptionProgress)}%
-              </span>
-            </div>
-          )}
+          {/* Top-right corner so it never overlaps the bottom-center subtitle overlay.
+              Hidden while the full initial-transcription overlay is showing, once progress
+              reaches 100%, or when realtime streaming is done. */}
+          {isTranscribing &&
+            !isInitialTranscribing &&
+            transcriptionProgress < 100 && (
+              <div className="absolute top-4 right-4 z-20 flex items-center gap-2 px-4 py-2 bg-black/70 backdrop-blur rounded-full border border-gray-700 shadow-xl pointer-events-none">
+                <Loader2 className="w-4 h-4 animate-spin text-zan-cyan" />
+                <span className="text-sm text-white">
+                  Transcribing... {Math.round(transcriptionProgress)}%
+                </span>
+              </div>
+            )}
 
           {/* Controls Bar */}
           <div
