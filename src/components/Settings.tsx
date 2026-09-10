@@ -2,7 +2,7 @@ import { useAppStore } from "../services/store";
 import { Languages, Settings as SettingsIcon, CheckCircle2, Info, Download, Trash2, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isTauri } from "../services/tauri";
-import { checkForUpdates, installAndRestart } from "../services/updater";
+import { checkForUpdates } from "../services/updater";
 import { getVersion } from "@tauri-apps/api/app";
 import { translationService } from "../services/translation";
 import logoUrl from "../assets/icon.png";
@@ -136,12 +136,8 @@ export const SettingsComponent = () => {
     setTranscriptionMode,
     autoCheckUpdates,
     setAutoCheckUpdates,
-    updateChecking,
-    isDownloading,
-    downloadProgress,
-    isUpdateReady,
-    updateNotice,
-    setUpdateNotice,
+    updateStatus,
+    setUpdateModalOpen,
   } = useAppStore();
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
@@ -181,25 +177,20 @@ export const SettingsComponent = () => {
     }
   };
 
-  const handleCheckUpdate = async () => {
-    await checkForUpdates("manual");
+  const handleCheckUpdate = () => {
+    if (updateStatus === "ready") {
+      // A download is already staged - reopen the modal to offer
+      // "Install & Restart" without hitting the network again.
+      setUpdateModalOpen(true);
+      return;
+    }
+    void checkForUpdates("manual");
   };
 
   useEffect(() => {
     if (!isTauri()) return;
     getVersion().then(setAppVersion).catch(() => {});
   }, []);
-
-  // Auto-dismiss the inline "up to date" notice after a few seconds.
-  useEffect(() => {
-    if (!updateNotice) return;
-    const timer = setTimeout(() => setUpdateNotice(null), 6000);
-    return () => clearTimeout(timer);
-  }, [updateNotice, setUpdateNotice]);
-
-  const handleInstallUpdate = async () => {
-    await installAndRestart();
-  };
 
   const currentModelName = whisperModels.find(m => m.id === whisperModel)?.name || whisperModel;
   const inputClass = `w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-zan-cyan ${controlClass(theme)}`;
@@ -247,49 +238,13 @@ export const SettingsComponent = () => {
               </div>
               <Toggle on={autoCheckUpdates} onClick={() => setAutoCheckUpdates(!autoCheckUpdates)} />
             </div>
-            {isDownloading ? (
-              <div className="space-y-2">
-                <p className={`text-sm font-medium ${valueClass(theme)}`}>
-                  Downloading update... {downloadProgress}%
-                </p>
-                <div className="w-full bg-gray-700 rounded-full h-2.5">
-                  <div
-                    className="bg-blue-600 h-2.5 rounded-full transition-all duration-200 ease-out"
-                    style={{ width: `${downloadProgress}%` }}
-                  />
-                </div>
-              </div>
-            ) : isUpdateReady ? (
-              <button
-                onClick={handleInstallUpdate}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-medium transition-all"
-              >
-                <Download className="w-4 h-4" />
-                Install & Restart
-              </button>
-            ) : (
-              <>
-                <button
-                  onClick={handleCheckUpdate}
-                  disabled={updateChecking}
-                  aria-busy={updateChecking}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-                >
-                  {updateChecking ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="w-4 h-4" />
-                  )}
-                  <span>{updateChecking ? "Checking..." : "Check for Updates"}</span>
-                </button>
-                {updateNotice && (
-                  <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-green-600/40 bg-green-600/10 text-green-400 text-sm">
-                    <CheckCircle2 className="w-4 h-4 shrink-0" />
-                    <span>{updateNotice}</span>
-                  </div>
-                )}
-              </>
-            )}
+            <button
+              onClick={handleCheckUpdate}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Check for Updates
+            </button>
           </>
         ) : (
           <p className={`text-xs ${labelClass(theme)}`}>

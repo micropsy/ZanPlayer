@@ -7,6 +7,7 @@ import { Menu, FileVideo } from 'lucide-react';
 import { listen, emit } from '@tauri-apps/api/event';
 import { TauriService, isTauri } from './services/tauri';
 import { checkForUpdates } from './services/updater';
+import { UpdateModal } from './components/UpdateModal';
 
 // Helper functions to check file types
 const isVideoFile = (fileName: string): boolean => {
@@ -309,6 +310,7 @@ function App() {
         <VideoPlayer onEditSubtitles={() => setEditorOpen(true)} />
       </div>
       {editorOpen && <SubtitleEditor onClose={() => setEditorOpen(false)} />}
+      <UpdateModal />
     </div>
   );
 }

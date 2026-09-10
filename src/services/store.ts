@@ -5,6 +5,7 @@ import { TauriService } from "./tauri";
 
 export type SubtitleDisplayMode = "original" | "translated" | "dual";
 export type ProgressStep = "idle" | "saving" | "extracting" | "transcribing";
+export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "uptodate";
 
 export interface SubtitleStyle {
     fontName: string;
@@ -164,19 +165,15 @@ interface AppState {
     sidebarVisible: boolean;
     setSidebarVisible: (visible: boolean) => void;
 
-    // Updater (shared by manual Settings flow + background startup check)
-    updateChecking: boolean;
-    setUpdateChecking: (checking: boolean) => void;
-    isDownloading: boolean;
-    setIsDownloading: (downloading: boolean) => void;
+    // Updater (global UpdateModal; shared by manual Settings flow + background startup check)
+    updateModalOpen: boolean;
+    setUpdateModalOpen: (open: boolean) => void;
+    updateStatus: UpdateStatus;
+    setUpdateStatus: (status: UpdateStatus) => void;
     downloadProgress: number;
     setDownloadProgress: (progress: number) => void;
-    isUpdateReady: boolean;
-    setIsUpdateReady: (ready: boolean) => void;
     updateVersion: string | null;
     setUpdateVersion: (version: string | null) => void;
-    updateNotice: string | null;
-    setUpdateNotice: (notice: string | null) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -477,18 +474,14 @@ export const useAppStore = create<AppState>()(
             setSidebarVisible: (visible: boolean) => set({ sidebarVisible: visible }),
 
             // Updater
-            updateChecking: false,
-            setUpdateChecking: (checking: boolean) => set({ updateChecking: checking }),
-            isDownloading: false,
-            setIsDownloading: (downloading: boolean) => set({ isDownloading: downloading }),
+            updateModalOpen: false,
+            setUpdateModalOpen: (open: boolean) => set({ updateModalOpen: open }),
+            updateStatus: "idle",
+            setUpdateStatus: (status: UpdateStatus) => set({ updateStatus: status }),
             downloadProgress: 0,
             setDownloadProgress: (progress: number) => set({ downloadProgress: progress }),
-            isUpdateReady: false,
-            setIsUpdateReady: (ready: boolean) => set({ isUpdateReady: ready }),
             updateVersion: null,
             setUpdateVersion: (version: string | null) => set({ updateVersion: version }),
-            updateNotice: null,
-            setUpdateNotice: (notice: string | null) => set({ updateNotice: notice }),
         }),
         {
             name: "zanplayer-storage",
