@@ -139,6 +139,9 @@ export const SettingsComponent = () => {
   const [translationProgress, setTranslationProgress] = useState<number | null>(null);
   const [translationPhase, setTranslationPhase] = useState<"downloading" | "preparing" | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isUpdateReady, setIsUpdateReady] = useState(false);
 
   useEffect(() => {
     loadDownloadedModels();
@@ -175,21 +178,67 @@ export const SettingsComponent = () => {
   const handleCheckUpdate = async () => {
     if (!isTauri()) return;
     setIsCheckingUpdate(true);
+    setDownloadProgress(0);
+    setIsUpdateReady(false);
+    setIsDownloading(false);
     try {
       const update = await check();
       if (update) {
         const installNow = await ask(
-          `Version ${update.version} is available. Do you want to download and install it?`,
+          `Version ${update.version} is available. Do you want to download it?`,
           {
             title: "Update Available",
             kind: "info",
-            okLabel: "Download & Install",
+            okLabel: "Download",
             cancelLabel: "Later",
           }
         );
         if (installNow) {
-          await update.downloadAndInstall();
-          await TauriService.relaunchApp();
+          // Switch the button out for the live download-progress bar, then let
+          // the user decide when to relaunch once the download finishes.
+          setIsCheckingUpdate(false);
+          setIsDownloading(true);
+          let totalBytes = 0;
+          let downloadedBytes = 0;
+          try {
+            await update.downloadAndInstall((event) => {
+              if (event.event === "Started") {
+                totalBytes = event.data.contentLength ?? 0;
+                downloadedBytes = 0;
+                setDownloadProgress(0);
+              } else if (event.event === "Progress") {
+                downloadedBytes += event.data.chunkLength;
+                // Guard against division by zero when the server omits the total
+                // size; the bar simply stays at its current percentage.
+                if (totalBytes > 0) {
+                  const percent = Math.min(
+                    100,
+                    Math.round((downloadedBytes / totalBytes) * 100)
+                  );
+                  setDownloadProgress(percent);
+                }
+              } else if (event.event === "Finished") {
+                setDownloadProgress(100);
+                setIsDownloading(false);
+                setIsUpdateReady(true);
+              }
+            });
+          } catch (err) {
+            const detail =
+              err instanceof Error && err.message.trim()
+                ? err.message.trim()
+                : typeof err === "string"
+                  ? err
+                  : "Unknown error";
+            console.error("Update download failed:", err);
+            setIsDownloading(false);
+            setIsUpdateReady(false);
+            setDownloadProgress(0);
+            await message(`Update download failed. ${detail}`, {
+              title: "Update Error",
+              kind: "error",
+            }).catch(() => {});
+          }
         }
       } else {
         await message("ZanPlayer is up to date.", {
@@ -199,6 +248,9 @@ export const SettingsComponent = () => {
       }
     } catch (error) {
       console.error("Update check failed:", error);
+      setIsDownloading(false);
+      setIsUpdateReady(false);
+      setDownloadProgress(0);
       const detail =
         error instanceof Error && error.message.trim()
           ? error.message.trim()
@@ -218,6 +270,31 @@ export const SettingsComponent = () => {
       }
     } finally {
       if (isTauri()) setIsCheckingUpdate(false);
+    }
+  };
+
+  const handleInstallUpdate = async () => {
+    if (!isTauri()) return;
+    try {
+      // Equivalent to `relaunch()` from @tauri-apps/plugin-process: the bundled
+      // Rust `relaunch_app` command exits the process and the updater applies the
+      // staged update on the next launch.
+      await TauriService.relaunchApp();
+    } catch (error) {
+      const detail =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : typeof error === "string"
+            ? error
+            : "Unknown error";
+      console.error("Relaunch failed:", error);
+      setIsUpdateReady(false);
+      setIsDownloading(false);
+      setDownloadProgress(0);
+      await message(`Unable to restart the app. ${detail}`, {
+        title: "Update Error",
+        kind: "error",
+      }).catch(() => {});
     }
   };
 
@@ -255,24 +332,46 @@ export const SettingsComponent = () => {
           Updates
         </label>
         {isTauri() ? (
-          <button
-            onClick={handleCheckUpdate}
-            disabled={isCheckingUpdate}
-            aria-busy={isCheckingUpdate}
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {isCheckingUpdate ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Checking...
-              </>
-            ) : (
-              <>
-                <RefreshCw className="w-4 h-4" />
-                Check for Updates
-              </>
-            )}
-          </button>
+          isDownloading ? (
+            <div className="space-y-2">
+              <p className={`text-sm font-medium ${valueClass(theme)}`}>
+                Downloading update... {downloadProgress}%
+              </p>
+              <div className="w-full bg-gray-700 rounded-full h-2.5">
+                <div
+                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-200 ease-out"
+                  style={{ width: `${downloadProgress}%` }}
+                />
+              </div>
+            </div>
+          ) : isUpdateReady ? (
+            <button
+              onClick={handleInstallUpdate}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-medium transition-all"
+            >
+              <Download className="w-4 h-4" />
+              Install & Restart
+            </button>
+          ) : (
+            <button
+              onClick={handleCheckUpdate}
+              disabled={isCheckingUpdate}
+              aria-busy={isCheckingUpdate}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-zan-blue hover:bg-zan-deep text-white rounded-lg text-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {isCheckingUpdate ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Checking...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-4 h-4" />
+                  Check for Updates
+                </>
+              )}
+            </button>
+          )
         ) : (
           <p className={`text-xs ${labelClass(theme)}`}>
             Update feature is only available in the desktop app.
