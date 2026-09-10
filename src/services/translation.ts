@@ -1,7 +1,6 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { readFile } from "@tauri-apps/plugin-fs";
-import { dirname, join } from "@tauri-apps/api/path";
+import { dirname } from "@tauri-apps/api/path";
 import { isTauri } from "./tauri";
 import { useAppStore } from "./store";
 import {
@@ -20,16 +19,6 @@ interface NllbProgressEvent {
   fileDone: number;
 }
 
-const NLLB_FILES = [
-  "config.json",
-  "generation_config.json",
-  "tokenizer.json",
-  "tokenizer_config.json",
-  "special_tokens_map.json",
-  "onnx/encoder_model_quantized.onnx",
-  "onnx/decoder_model_merged_quantized.onnx",
-];
-
 const NLLB_FILE_SIZES: Record<string, number> = {
   "config.json": 264,
   "generation_config.json": 189,
@@ -40,7 +29,29 @@ const NLLB_FILE_SIZES: Record<string, number> = {
   "onnx/decoder_model_merged_quantized.onnx": 475505771,
 };
 
-const NLLB_TOTAL_BYTES = NLLB_FILES.reduce((sum, f) => sum + (NLLB_FILE_SIZES[f] ?? 0), 0);
+const NLLB_TOTAL_BYTES = Object.values(NLLB_FILE_SIZES).reduce(
+  (sum, size) => sum + size,
+  0
+);
+
+// Race a promise against a hard timeout. Used to convert dead/hung loads and
+// dead/hung inferences (both observed on WKWebView with the ONNX pipeline) into
+// visible errors instead of an endless "Loading Translator 100%".
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
 
 type WorkerResponse =
   | { type: "ready"; id: string }
@@ -49,11 +60,6 @@ type WorkerResponse =
   | { type: "error"; id: string; message: string }
   | { type: "status"; id: string; payload: { loaded: boolean; loading: boolean } }
   | { type: "loading-progress"; percent: number };
-
-const cacheKey = (filename: string): string => {
-  const templatePath = NLLB_CACHE_TEMPLATE.replace(/\{model\}/g, NLLB_MODEL_ID);
-  return new URL(filename, new URL(`${templatePath.replace(/\/$/, "")}/`, NLLB_CACHE_HOST)).href;
-};
 
 class TranslationService {
   private worker: Worker | null = null;
@@ -137,8 +143,7 @@ class TranslationService {
       } else {
         onProgress?.(100, "preparing");
       }
-      await this.warmModelCache(onProgress);
-      await this.ensureReady();
+      await this.initTranslator();
       // Self-test: prove the loaded pipeline actually produces output before
       // marking the model available. A load that "succeeds" but can't run (e.g.
       // broken asset protocol, unavailable ONNX session) would otherwise appear
@@ -185,38 +190,44 @@ class TranslationService {
     }
   }
 
-  private async warmModelCache(onProgress?: (percent: number, phase: "preparing") => void): Promise<void> {
-    if (!("caches" in self)) {
-      throw new Error("Offline model cache is unavailable in this environment");
+  // Resolve the model directory to a webview-accessible asset URL and load the
+  // NLLB pipeline exclusively from local disk (never the network or Cache API).
+  // The whole load is bounded by a timeout: a pipeline that hangs while reading
+  // the ~900MB ONNX files (seen on WKWebView) now rejects with a visible error
+  // instead of leaving the spinner stuck at 100% forever.
+  private async initTranslator(): Promise<void> {
+    let localModelPath: string | undefined;
+    if (isTauri()) {
+      const modelDir = await this.getModelPath();
+      const appDataDir = await dirname(modelDir);
+      localModelPath = convertFileSrc(appDataDir);
     }
-    const dir = await this.getModelPath();
-    const cache = await caches.open("transformers-cache");
-    for (let i = 0; i < NLLB_FILES.length; i++) {
-      const filename = NLLB_FILES[i];
-      const key = cacheKey(filename);
-      if (await cache.match(key)) {
-        continue;
+    await withTimeout(
+      this.readyRequest(localModelPath),
+      240_000,
+      "Timed out loading the translation model. Please restart the app and try again."
+    );
+  }
+
+  private readyRequest(localModelPath?: string): Promise<void> {
+    return this.request("init", {
+      modelId: NLLB_MODEL_ID,
+      cacheHost: NLLB_CACHE_HOST,
+      cacheTemplate: NLLB_CACHE_TEMPLATE,
+      localModelPath,
+    }).then((response) => {
+      if (response.type !== "ready") {
+        throw new Error("Failed to initialize translation model");
       }
-      const filePath = await join(dir, ...filename.split("/"));
-      const bytes = await readFile(filePath);
-      const response = new Response(new Blob([bytes]), { status: 200 });
-      try {
-        await cache.put(key, response);
-      } catch {
-        throw new Error(
-          `Not enough storage to cache the translation model offline (${filename}). Free some space and try again.`
-        );
-      }
-      const percent = Math.min(100, 90 + ((i + 1) / NLLB_FILES.length) * 10);
-      onProgress?.(percent, "preparing");
-    }
+    });
   }
 
   // Silently warm the NLLB model in the background at startup when it is
-  // already installed: warms the offline cache and loads the ONNX weights into
-  // the worker. Never downloads anything on its own (that stays opt-in via
-  // Settings). Progress is written to the store so the player can show a
-  // non-intrusive "Loading Translator..." indicator.
+  // already installed: loads the ONNX weights into the worker so realtime
+  // translated captions start flowing the moment a video is loaded. Never
+  // downloads anything on its own (that stays opt-in via Settings). Progress is
+  // written to the store so the player can show a non-intrusive
+  // "Loading Translator..." indicator.
   async autoLoadIfInstalled(onProgress?: (percent: number) => void): Promise<void> {
     if (!isTauri()) return;
     const s = useAppStore.getState();
@@ -312,11 +323,15 @@ class TranslationService {
       attempts += 1;
       try {
         await this.ensureReady();
-        const response = await this.request("translate-chunk", {
-          text,
-          tgtLang: targetLang,
-          ...(srcLang ? { srcLang } : {}),
-        });
+        const response = await withTimeout(
+          this.request("translate-chunk", {
+            text,
+            tgtLang: targetLang,
+            ...(srcLang ? { srcLang } : {}),
+          }),
+          60_000,
+          "Translation chunk timed out"
+        );
         if (response.type === "chunk-translated") {
           return response.translatedText;
         }
@@ -328,7 +343,8 @@ class TranslationService {
         const message = err instanceof Error ? err.message : String(err);
         if (
           attempts >= 2 ||
-          (message.length > 0 && !message.match(/not loaded|init|fetch|network|worker|cache|onnx/i))
+          (message.length > 0 &&
+            !message.match(/timed out|not loaded|init|fetch|network|worker|cache|onnx/i))
         ) {
           throw err;
         }

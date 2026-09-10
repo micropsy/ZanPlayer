@@ -168,7 +168,11 @@ async function ensureTranslator(
       env.backends.onnx.wasm.wasmPaths = new URL("../../onnx/", self.location.href).href;
       env.remoteHost = payload.cacheHost;
       env.remotePathTemplate = payload.cacheTemplate;
-      env.useBrowserCache = true;
+      // Do NOT persist model files in the browser Cache API. Writing multi-hundred-
+      // MB ONNX files into the cache hangs/fails on WKWebView (macOS), leaving
+      // the load stuck at 100% forever with the model never becoming usable.
+      // Files are read straight from disk via the asset protocol instead.
+      env.useBrowserCache = false;
       if (payload.localModelPath) {
         // Offline-only: load every model file from local disk via the injected
         // asset URL (convertFileSrc of the app-data dir). Never hit the network,
