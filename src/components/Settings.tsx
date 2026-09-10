@@ -199,13 +199,23 @@ export const SettingsComponent = () => {
       }
     } catch (error) {
       console.error("Update check failed:", error);
-      await message(
-        "Unable to check for updates at this time (dev mode or no connection).",
-        {
+      const detail =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : typeof error === "string"
+            ? error
+            : "Unknown error";
+      if (detail.toLowerCase().includes("offline") || detail.toLowerCase().includes("no internet")) {
+        await message("No internet connection. Please check your connection and try again.", {
           title: "Update Error",
           kind: "error",
-        }
-      ).catch(() => {});
+        }).catch(() => {});
+      } else {
+        await message(`Unable to check for updates. ${detail}`, {
+          title: "Update Error",
+          kind: "error",
+        }).catch(() => {});
+      }
     } finally {
       if (isTauri()) setIsCheckingUpdate(false);
     }
