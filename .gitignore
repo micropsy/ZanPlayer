@@ -30,7 +30,7 @@ src-tauri/target/
 src-tauri/binaries/
 
 # Private key (keep secret!)
-private-key.pem
+zanplayer-lite.key
 
 # Local machine backups
 backups/
