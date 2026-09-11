@@ -15,6 +15,7 @@ Everything below executes on your machine, on native threads:
   - **Both (Dual)** → two passes tagged `original` / `translation`; the UI render queue merges their (PTS-synced) cues into stacked dual subtitles
   - The English target is never hardcoded — the pass plan follows the selected output mode, and the **Spoken Audio (Source)** selector pins whisper's language token to prevent hallucinations on low-resource languages (e.g. Burmese).
 - **VAD-gated streaming** — `silero-vad-pure` detects speech utterances and feeds them to whisper in chunks, so cues stream in live while you watch.
+- **Seek-aware streaming** — jump the playhead (seek bar, `←`/`→`, or click-to-seek) and every live pass drops its current VAD/utterance state, repositions the WAV reader to the new timestamp, and resumes from there — stale pre-seek audio is never decoded.
 - **Two generation strategies** (see below).
 
 ## Features
@@ -47,7 +48,7 @@ Everything below executes on your machine, on native threads:
     - **Both (Dual)** → two passes over the exact same audio buffer; the UI render queue merges their timestamps into stacked dual subtitles
   - **Dynamic target language**: whisper's task flag follows the user's choice — never hardcoded to English
   - **Spoken Audio (Source)** selector (Auto-Detect / Burmese / English / 12+ languages) pins the whisper language token, preventing hallucinations on low-resource languages such as Burmese
-  - **Realtime (Streaming)**: VAD-gated chunked decode streams cues as they land. For "Both", the transcribe and translate passes run on **separate asynchronous threads** so dual subtitles never lag the video
+  - **Realtime (Streaming)**: VAD-gated chunked decode streams cues as they land. For "Both", the transcribe and translate passes run on **separate asynchronous threads** so dual subtitles never lag the video. **Seeking while streaming** repositions each live pass (via `seek_transcription`) so captions keep regenerating for exactly what is on screen
   - **Full (Batch)**: the entire audio track is transcribed (and translated) sequentially before playback begins, guaranteeing perfectly-synced, zero-latency dual subtitles
   - Model manager in Settings downloads/removes Whisper models (tiny → base → small → medium → large)
 
@@ -117,8 +118,8 @@ ZanPlayer Lite/
 │   └── release.mjs             # SemVer release automation
 ├── public/                     # Static assets
 ├── src-tauri/                  # Backend (Rust/Tauri)
-│   ├── src/main.rs             # Commands: whisper dual-pass jobs, ffmpeg, subtitles, model downloads
-│   ├── src/pipeline.rs         # Silero VAD -> chunked Whisper decode (translate on/off) -> PTS sync
+│   ├── src/main.rs             # Commands: whisper dual-pass jobs, live seek control, ffmpeg, subtitles, model downloads
+│   ├── src/pipeline.rs         # Silero VAD -> chunked Whisper decode (translate on/off) -> PTS sync + seek reset
 │   ├── Cargo.toml / tauri.conf.json
 │   └── capabilities/main.json  # Tauri 2 permissions
 └── .github/workflows/build.yml # CI: builds + creates releases for all 4 platforms
@@ -142,7 +143,7 @@ ZanPlayer Lite/
 2. Enable subtitles (CC). Transcription runs locally and streams in as cues are decoded.
 3. In Settings, download a Whisper model if not present.
 4. Choose **CC → Subtitle Output**: *Original* (source-speech captions), *English* (whisper's translate task), or *Both* (two parallel passes, dual lines on screen).
-5. Choose **CC → Generation**: *Realtime* streams while you watch; *Full (Batch)* transcribes the entire audio before playback for perfectly-synced zero-latency dual subtitles.
+5. Choose **CC → Generation**: *Realtime* streams while you watch; *Full (Batch)* transcribes the entire audio before playback for perfectly-synced zero-latency dual subtitles. Seeking while a *Realtime* job runs repositions the live passes, so captions always track the playhead.
 6. To keep low-resource audio (e.g. Burmese) from hallucinating English, set **CC → Spoken Audio (Source) → Burmese**.
 7. Edit cues in the sidebar editor and export when ready. **Click any cue** to jump the player (and the editor highlight) straight to that moment.
 8. **Save Project** (in the sidebar) writes a `.zan` file capturing the video, dual tracks, modes, and styling. **Load Project** restores the whole workspace instantly — transcription is never re-run.
@@ -152,6 +153,16 @@ ZanPlayer Lite/
 - [x] Tests for frontend and backend
 - [x] Click-to-seek from the subtitle editor into the player
 - [x] Project save/load (`.zan`)
+- [x] Seek-aware realtime transcription (streaming passes follow the playhead)
+
+## Testing
+
+```bash
+npm test                          # frontend unit tests (Vitest)
+cd src-tauri && cargo test        # backend unit tests (pipeline, projects, models, modes)
+cd src-tauri && cargo check       # Rust type-check
+npm run build                     # TypeScript type-check (tsc) + frontend build
+```
 
 ## Contributing
 
