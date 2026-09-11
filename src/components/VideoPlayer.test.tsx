@@ -217,4 +217,54 @@ describe("VideoPlayer dual-pass rendering", () => {
     fireEvent.timeUpdate(video);
     expect(useAppStore.getState().currentTime).toBe(9.5);
   });
+
+  it("realtime mode notifies the streaming job on a skip so the WAV reader repositions", async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "start_transcription") return undefined;
+      if (cmd === "poll_transcript_cues") return [];
+      return undefined;
+    });
+
+    render(<VideoPlayer />);
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+    const video = document.querySelector("video") as HTMLVideoElement;
+    video.currentTime = 10;
+
+    await startTranscriptionViaUi();
+    await waitFor(() => expect(useAppStore.getState().isTranscribing).toBe(true));
+
+    // ArrowRight = skip +5s; the live pass must drop its VAD/utterance state
+    // and resume from the playhead's new position (PTS 15), never the stale
+    // pre-seek audio it was decoding.
+    fireEvent.keyDown(window, { code: "ArrowRight" });
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("seek_transcription", {
+        mediaPath: "/tmp/media.wav",
+        seekTo: 15,
+      })
+    );
+  });
+
+  it("batch mode never pokes the streaming job: all cues arrive up-front", async () => {
+    useAppStore.setState({ transcriptionMode: "batch" });
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "start_transcription") return undefined;
+      if (cmd === "poll_transcript_cues") return [];
+      return undefined;
+    });
+
+    render(<VideoPlayer />);
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+    const video = document.querySelector("video") as HTMLVideoElement;
+    video.currentTime = 10;
+
+    await startTranscriptionViaUi();
+    await waitFor(() => expect(useAppStore.getState().isTranscribing).toBe(true));
+
+    fireEvent.keyDown(window, { code: "ArrowRight" });
+    fireEvent.keyDown(window, { code: "ArrowLeft" });
+
+    const seekCalls = invoke.mock.calls.filter(([cmd]) => cmd === "seek_transcription");
+    expect(seekCalls).toHaveLength(0);
+  });
 });

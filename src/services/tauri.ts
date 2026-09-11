@@ -224,6 +224,20 @@ export class TauriService {
     });
   }
 
+  // Forward a playhead jump to the active realtime (streaming) job. The Rust
+  // passes drop their current VAD/utterance state and reposition the WAV reader
+  // to `seekTo` so captions regenerate for the new position instead of decoding
+  // stale pre-seek audio. No-op for batch jobs and when nothing is transcribing.
+  static async seekTranscription(mediaPath: string, seekTo: number): Promise<void> {
+    if (!isTauri()) {
+      return;
+    }
+    await invoke<void>("seek_transcription", {
+      mediaPath,
+      seekTo,
+    });
+  }
+
   static async pollTranscriptCues(): Promise<SubtitleCue[]> {
     if (!isTauri()) {
       return [];

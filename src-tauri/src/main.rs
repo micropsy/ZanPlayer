@@ -4,6 +4,7 @@
 mod pipeline;
 
 use crate::pipeline::{StreamOptions, SubtitleCue};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use directories_next::ProjectDirs;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -34,7 +35,7 @@ enum SubtitleMode {
 ///    guaranteeing perfectly-synced, zero-latency dual subtitles at playback.
 #[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-enum TranscriptMode {
+enum TranscriptionMode {
     Stream,
     Batch,
 }
@@ -68,12 +69,12 @@ struct JobPlan {
     context_count: usize,
 }
 
-fn plan_job(subtitle_mode: SubtitleMode, transcript_mode: TranscriptMode) -> JobPlan {
+fn plan_job(subtitle_mode: SubtitleMode, transcription_mode: TranscriptionMode) -> JobPlan {
     let passes = passes_for_mode(subtitle_mode);
     // Two passes are cheap to overlap *only* in realtime mode, where each pass
     // owns a thread and its own context. Batch mode is inherently sequential:
     // one context decodes every pass, so loading a second one is pure waste.
-    let parallel = transcript_mode == TranscriptMode::Stream && passes.len() > 1;
+    let parallel = transcription_mode == TranscriptionMode::Stream && passes.len() > 1;
     let context_count = if parallel { passes.len() } else { 1 };
     JobPlan {
         passes,
@@ -186,6 +187,22 @@ struct ProjectData {
 /// and only surfaces cues whose timestamp overlaps the current playhead.
 #[derive(Clone, Default)]
 struct RenderQueue(Arc<Mutex<Vec<SubtitleCue>>>);
+
+/// Handle for one live transcription job's seek channel: which media file the
+/// job is decoding and the sender its streaming passes listen on. Replaced on
+/// every `start_transcription`; empty while idle, so seeks outside a run are
+/// no-ops.
+#[derive(Clone)]
+struct JobSeek {
+    media_path: String,
+    seek_tx: Sender<f64>,
+}
+
+/// App-managed live control channel. `seek_transcription` forwards a playhead
+/// jump to a realtime (streaming) job so its passes drop VAD/utterance state
+/// and reposition the WAV reader instead of transcribing stale audio.
+#[derive(Clone, Default)]
+struct SeekControl(Arc<Mutex<Option<JobSeek>>>);
 
 fn get_app_dir() -> PathBuf {
     let proj_dirs =
@@ -435,7 +452,7 @@ static MODEL_LOAD_LOCK: Mutex<()> = Mutex::new(());
 /// Non-WAV input is first extracted to a 16 kHz mono temp WAV via the bundled
 /// FFmpeg sidecar (awaited here so the spawn only carries CPU-bound work), then
 /// a dedicated thread runs the job: VAD-gated Whisper decode with the requested
-/// `subtitle_mode` (Original / English / Both) and `transcript_mode`
+/// `subtitle_mode` (Original / English / Both) and `transcription_mode`
 /// (real-time stream vs. full batch). Returns immediately after the thread is
 /// launched.
 #[tauri::command]
@@ -445,7 +462,7 @@ async fn start_transcription(
     model_name: String,
     language: Option<String>,
     subtitle_mode: SubtitleMode,
-    transcript_mode: TranscriptMode,
+    transcription_mode: TranscriptionMode,
 ) -> Result<(), String> {
     let dir = models_dir();
     let model_path = match find_model(&dir, &model_name) {
@@ -465,9 +482,23 @@ async fn start_transcription(
     } else {
         let temp_dir = std::env::temp_dir();
         PathBuf::from(
-            extract_audio(app.clone(), media_path, temp_dir.to_string_lossy().to_string()).await?,
+            extract_audio(app.clone(), media_path.clone(), temp_dir.to_string_lossy().to_string()).await?,
         )
     };
+
+    // Register this job's live seek channel so `seek_transcription` (invoked on
+    // every playhead jump while subtitles are running) can reposition the
+    // realtime passes. Replacing the sender for a new job is safe: streaming
+    // passes hold a cloned receiver; a stale sender simply finds no listeners.
+    let (seek_tx, seek_rx) = unbounded::<f64>();
+    app.state::<SeekControl>()
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .replace(JobSeek {
+            media_path: media_path.clone(),
+            seek_tx,
+        });
 
     std::thread::spawn(move || {
         run_transcription_job(
@@ -477,7 +508,8 @@ async fn start_transcription(
             model_path,
             language,
             subtitle_mode,
-            transcript_mode,
+            transcription_mode,
+            seek_rx,
         );
     });
     Ok(())
@@ -490,9 +522,10 @@ fn run_transcription_job(
     model_path: PathBuf,
     language: Option<String>,
     subtitle_mode: SubtitleMode,
-    transcript_mode: TranscriptMode,
+    transcription_mode: TranscriptionMode,
+    seek_rx: Receiver<f64>,
 ) {
-    let plan = plan_job(subtitle_mode, transcript_mode);
+    let plan = plan_job(subtitle_mode, transcription_mode);
     let passes = plan.passes.clone();
     let parallel = plan.parallel;
 
@@ -517,22 +550,22 @@ fn run_transcription_job(
         }
     }
 
-    let result = match (transcript_mode, parallel) {
+    let result = match (transcription_mode, parallel) {
         // One real-time pass streams cues out the moment each chunk decodes.
-        (TranscriptMode::Stream, false) => {
-            run_streaming_job(app.clone(), &wav_path, passes, contexts, language)
+        (TranscriptionMode::Stream, false) => {
+            run_streaming_job(app.clone(), &wav_path, passes, contexts, language, seek_rx)
         }
         // Two real-time passes (original + translation) on separate threads over
         // the same WAV, so "Both" never doubles wall-clock time per chunk.
-        (TranscriptMode::Stream, true) => {
-            run_streaming_job(app.clone(), &wav_path, passes, contexts, language)
+        (TranscriptionMode::Stream, true) => {
+            run_streaming_job(app.clone(), &wav_path, passes, contexts, language, seek_rx)
         }
         // Full batch: one context decodes every pass sequentially, buffering all
         // cues; the UI surfaces both complete tracks only when the job finishes.
-        (TranscriptMode::Batch, false) => {
+        (TranscriptionMode::Batch, false) => {
             run_batch_job(app.clone(), &wav_path, contexts, language, &passes)
         }
-        (TranscriptMode::Batch, true) => unreachable!("batch mode never needs parallel contexts"),
+        (TranscriptionMode::Batch, true) => unreachable!("batch mode never needs parallel contexts"),
     };
 
     if cleanup_wav {
@@ -555,6 +588,30 @@ fn run_transcription_job(
 fn poll_transcript_cues(state: State<'_, RenderQueue>) -> Vec<SubtitleCue> {
     let mut guard = state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     std::mem::take(&mut *guard)
+}
+
+/// Forward a playhead jump to the active realtime (streaming) job, if any.
+/// Each streaming pass drops its current VAD/utterance state and repositions
+/// the WAV reader to `seek_to` (PTS seconds) so subtitles regenerate for the
+/// position the video actually moved to — instead of surfacing stale audio
+/// decoded from before the seek. Batch jobs ignore this (they surface nothing
+/// until the whole file decodes). No-op when no job is running for `media_path`.
+#[tauri::command]
+fn seek_transcription(
+    app: AppHandle,
+    media_path: String,
+    seek_to: f64,
+) -> Result<(), String> {
+    let Some(control) = app
+        .try_state::<SeekControl>()
+        .and_then(|c| c.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone())
+    else {
+        return Ok(());
+    };
+    if control.media_path == media_path && !seek_to.is_nan() {
+        let _ = control.seek_tx.send(seek_to.max(0.0));
+    }
+    Ok(())
 }
 
 /// Running average of per-pass progress slots (0.0-100.0). Each parallel
@@ -590,6 +647,7 @@ fn run_streaming_job(
     passes: Vec<(bool, String)>,
     contexts: Vec<WhisperContext>,
     language: Option<String>,
+    seek_rx: Receiver<f64>,
 ) -> Result<usize, String> {
     let pass_count = passes.len();
     let queue = app.state::<RenderQueue>().0.clone();
@@ -608,8 +666,20 @@ fn run_streaming_job(
         let queue = queue.clone();
         let progress = progress.clone();
         let language = language.clone();
+        let seek_rx = seek_rx.clone();
         handles.push(std::thread::spawn(move || {
-            run_streaming_pass_inner(&app, &wav, &ctx, language, translate, kind, idx, queue, progress)
+            run_streaming_pass_inner(
+                &app,
+                &wav,
+                &ctx,
+                language,
+                translate,
+                kind,
+                idx,
+                queue,
+                progress,
+                seek_rx,
+            )
         }));
     }
 
@@ -626,6 +696,8 @@ fn run_streaming_job(
 
 /// One real-time pass: VAD-gated chunked decode pushing cues to the render
 /// queue and streaming `transcript-segment`/`transcript-cues-ready` events.
+/// `seek_rx` carries playhead jumps from the UI; each one drops the current
+/// VAD/utterance state and repositions the WAV reader (see `StreamOptions::seek_rx`).
 fn run_streaming_pass_inner(
     app: &AppHandle,
     wav_path: &Path,
@@ -636,9 +708,11 @@ fn run_streaming_pass_inner(
     pass_index: usize,
     queue: Arc<Mutex<Vec<SubtitleCue>>>,
     progress: Arc<Mutex<Vec<f64>>>,
+    seek_rx: Receiver<f64>,
 ) -> Result<usize, String> {
     let options = StreamOptions {
         language,
+        seek_rx: Some(seek_rx),
         ..StreamOptions::default()
     };
 
@@ -1240,7 +1314,7 @@ mod tests {
     #[test]
     fn plan_job_single_passes_run_on_one_context() {
         for mode in [SubtitleMode::Original, SubtitleMode::English] {
-            for tm in [TranscriptMode::Stream, TranscriptMode::Batch] {
+            for tm in [TranscriptionMode::Stream, TranscriptionMode::Batch] {
                 let plan = plan_job(mode, tm);
                 assert_eq!(plan.passes.len(), 1);
                 assert!(!plan.parallel);
@@ -1251,7 +1325,7 @@ mod tests {
 
     #[test]
     fn plan_job_both_stream_spawns_two_parallel_contexts() {
-        let plan = plan_job(SubtitleMode::Both, TranscriptMode::Stream);
+        let plan = plan_job(SubtitleMode::Both, TranscriptionMode::Stream);
         assert_eq!(plan.passes.len(), 2);
         assert!(plan.parallel);
         assert_eq!(plan.context_count, 2);
@@ -1259,14 +1333,14 @@ mod tests {
 
     #[test]
     fn plan_job_both_batch_stays_sequential_on_one_context() {
-        let plan = plan_job(SubtitleMode::Both, TranscriptMode::Batch);
+        let plan = plan_job(SubtitleMode::Both, TranscriptionMode::Batch);
         assert_eq!(plan.passes.len(), 2);
         assert!(!plan.parallel);
         assert_eq!(plan.context_count, 1);
     }
 
     #[test]
-    fn subtitle_and_transcript_modes_serde_use_lowercase_names() {
+    fn subtitle_and_transcription_modes_serde_use_lowercase_names() {
         let cases = [
             ("\"original\"", SubtitleMode::Original),
             ("\"english\"", SubtitleMode::English),
@@ -1276,14 +1350,14 @@ mod tests {
             assert_eq!(serde_json::from_str::<SubtitleMode>(json).unwrap(), expected);
         }
         let cases = [
-            ("\"stream\"", TranscriptMode::Stream),
-            ("\"batch\"", TranscriptMode::Batch),
+            ("\"stream\"", TranscriptionMode::Stream),
+            ("\"batch\"", TranscriptionMode::Batch),
         ];
         for (json, expected) in cases {
-            assert_eq!(serde_json::from_str::<TranscriptMode>(json).unwrap(), expected);
+            assert_eq!(serde_json::from_str::<TranscriptionMode>(json).unwrap(), expected);
         }
         assert!(serde_json::from_str::<SubtitleMode>("\"Both\"").is_err());
-        assert!(serde_json::from_str::<TranscriptMode>("\"Stream\"").is_err());
+        assert!(serde_json::from_str::<TranscriptionMode>("\"Stream\"").is_err());
     }
 
     #[test]
@@ -1436,6 +1510,7 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(RenderQueue::default())
+        .manage(SeekControl::default())
         .invoke_handler(tauri::generate_handler![
             open_video_dialog,
             open_subtitle_dialog,
@@ -1450,6 +1525,7 @@ fn main() {
             extract_audio,
             start_transcription,
             poll_transcript_cues,
+            seek_transcription,
             download_whisper_model,
             delete_whisper_model,
             list_downloaded_models,

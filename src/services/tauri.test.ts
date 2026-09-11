@@ -45,6 +45,16 @@ describe("TauriService dual-pass wiring", () => {
     });
   });
 
+  it("seekTranscription forwards the playhead target to the streaming job", async () => {
+    invoke.mockResolvedValue(undefined);
+    await TauriService.seekTranscription("/v.mp4", 42.5);
+    expect(invoke).toHaveBeenCalledWith("seek_transcription", {
+      mediaPath: "/v.mp4",
+      seekTo: 42.5,
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   it("pollTranscriptCues maps backend cues and preserves the pass kind", async () => {
     invoke.mockResolvedValue([
       { id: "o1", start_time: 1.0, end_time: 3.0, text: "မင်္ဂလာပါ", kind: "original" },

@@ -41,6 +41,11 @@ pub struct StreamOptions {
     pub min_silence_secs: f64,
     /// Never feed Whisper a chunk longer than this (s).
     pub max_chunk_secs: f64,
+    /// Realtime seek channel. `Some(rx)` tells a live pass to drop its current
+    /// VAD/utterance state, reposition the WAV reader to the requested PTS and
+    /// keep streaming from there. `None` for full (batch) jobs, which surface
+    /// nothing until the whole file decodes.
+    pub seek_rx: Option<Receiver<f64>>,
 }
 
 impl Default for StreamOptions {
@@ -51,6 +56,7 @@ impl Default for StreamOptions {
             min_speech_secs: 0.4,
             min_silence_secs: 0.6,
             max_chunk_secs: 30.0,
+            seek_rx: None,
         }
     }
 }
@@ -106,32 +112,66 @@ pub fn transcribe_wav_streaming(
     let mut samples_read = 0u64;
     let mut total_cues = 0usize;
 
+    let seek_rx = options.seek_rx.clone();
+
+    // Realtime seeks: a playhead jump repositions the WAV reader and drops the
+    // VAD/utterance state so the pass never decodes audio from before the seek.
+    // The first seek raises `min_cue_time`, a floor every cue emitted from then
+    // on must beat — pre-seek audio is stale by definition.
+    let mut min_cue_time = 0.0f64;
+
     // Stream i16 samples out of hound, normalising to [-1, 1) to match the VAD
     // and Whisper float input, and feed 512-sample VAD frames.
     let mut frame: Vec<f32> = Vec::with_capacity(VAD_FRAME);
 
-    for sample in reader.samples::<i16>() {
-        let s = sample.map_err(|e| format!("WAV sample read failed: {}", e))? as f32 / 32768.0;
-        let frame_start_sample = samples_read;
-        samples_read += 1;
-        frame.push(s);
-        if frame.len() == VAD_FRAME {
-            let speech = vad
-                .process(&frame)
-                .map_err(|e| format!("VAD frame failed: {}", e))?
-                >= options.vad_threshold;
-            if let Some((start, chunk)) = utterance.accumulate(
-                speech,
-                &frame,
-                frame_start_sample,
-            ) {
-                frame.clear();
-                dispatch_chunk(ctx, &chunk, start, language, translate, kind_tag, &seg_tx)?;
-                total_cues = drain_cues(&seg_rx, &mut on_cue, total_cues);
-                report_progress(samples_read, total_samples, &mut on_progress);
-            } else {
-                frame.clear();
+    // The read loop restarts from the WAV's new sample position after each seek.
+    // The `for` iterator borrows `reader`, so a seek is only observed *inside*
+    // the loop body (cheap try_recv on the channel); it is then applied — a real
+    // `reader.seek` needs the iterator dropped — on the next outer iteration.
+    loop {
+        let mut seeked_to: Option<f64> = None;
+
+        for sample in reader.samples::<i16>() {
+            let s = sample.map_err(|e| format!("WAV sample read failed: {}", e))? as f32 / 32768.0;
+            let frame_start_sample = samples_read;
+            samples_read += 1;
+            frame.push(s);
+            if frame.len() == VAD_FRAME {
+                let speech = vad
+                    .process(&frame)
+                    .map_err(|e| format!("VAD frame failed: {}", e))?
+                    >= options.vad_threshold;
+                if let Some((start, chunk)) = utterance.accumulate(
+                    speech,
+                    &frame,
+                    frame_start_sample,
+                ) {
+                    frame.clear();
+                    dispatch_chunk(ctx, &chunk, start, language, translate, kind_tag, min_cue_time, &seg_tx)?;
+                    total_cues = drain_cues(&seg_rx, &mut on_cue, total_cues);
+                    report_progress(samples_read, total_samples, &mut on_progress);
+                } else {
+                    frame.clear();
+                }
             }
+            if let Some(target) = recv_seek(&seek_rx) {
+                seeked_to = Some(target);
+                break;
+            }
+        }
+
+        match seeked_to {
+            None => break, // EOF: fall through to the trailing-frame + flush.
+            Some(target) => apply_seek(
+                target,
+                &mut reader,
+                &mut utterance,
+                &mut vad,
+                &mut min_cue_time,
+                &mut samples_read,
+                &mut frame,
+                &seg_rx,
+            )?,
         }
     }
 
@@ -148,7 +188,7 @@ pub fn transcribe_wav_streaming(
             >= options.vad_threshold;
         if let Some((start, chunk)) = utterance.accumulate(speech, &frame[..real_len], frame_start_sample)
         {
-            dispatch_chunk(ctx, &chunk, start, language, translate, kind_tag, &seg_tx)?;
+            dispatch_chunk(ctx, &chunk, start, language, translate, kind_tag, min_cue_time, &seg_tx)?;
             total_cues = drain_cues(&seg_rx, &mut on_cue, total_cues);
         }
     }
@@ -157,7 +197,7 @@ pub fn transcribe_wav_streaming(
     if utterance.needs_flush() {
         let start = utterance.flush_start();
         let chunk = utterance.take_chunk();
-        dispatch_chunk(ctx, &chunk, start, language, translate, kind_tag, &seg_tx)?;
+        dispatch_chunk(ctx, &chunk, start, language, translate, kind_tag, min_cue_time, &seg_tx)?;
         total_cues = drain_cues(&seg_rx, &mut on_cue, total_cues);
     }
 
@@ -232,6 +272,16 @@ impl UtteranceBuilder {
     fn take_chunk(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.speech_buf)
     }
+
+    /// Hard reset for a stream seek: the buffered speech predates the new
+    /// playhead, so the current utterance is abandoned and fresh-start state
+    /// restored (next speech frame re-opens at the seek position's PTS).
+    fn reset(&mut self) {
+        self.in_speech = false;
+        self.silence_frames = 0;
+        self.speech_buf.clear();
+        self.chunk_start_pts = 0.0;
+    }
 }
 
 /// Run one Whisper decode pass over an audio chunk at absolute `start` seconds.
@@ -241,7 +291,9 @@ impl UtteranceBuilder {
 /// outputs the source speech. `kind` tags every emitted cue so a dual-pass
 /// caller can merge the two passes in the UI render queue. The segment callback
 /// maps Whisper's 10 ms relative timestamps onto the source timeline before
-/// queueing a cue.
+/// queueing a cue. `min_cue_time` is the realtime-seek floor: a seek repositions
+/// the playhead mid-decode, and any cue that *starts* before it was decoded from
+/// audio the user skipped, so it is dropped.
 fn dispatch_chunk(
     ctx: &WhisperContext,
     audio: &[f32],
@@ -249,6 +301,7 @@ fn dispatch_chunk(
     language: Option<&str>,
     translate: bool,
     kind: Option<&str>,
+    min_cue_time: f64,
     seg_tx: &Sender<SubtitleCue>,
 ) -> Result<(), String> {
     let lang_code = normalize_language(language);
@@ -271,9 +324,13 @@ fn dispatch_chunk(
         if seg.text.trim().is_empty() {
             return;
         }
+        let start_time = start + seg.start_timestamp as f64 * 0.01;
+        if start_time < min_cue_time {
+            return;
+        }
         let _ = tx.send(SubtitleCue {
             id: uuid::Uuid::new_v4().to_string(),
-            start_time: start + seg.start_timestamp as f64 * 0.01,
+            start_time,
             end_time: start + seg.end_timestamp as f64 * 0.01,
             text: seg.text,
             kind: kind_owned.clone(),
@@ -302,6 +359,47 @@ fn drain_cues(
         count += 1;
     }
     count
+}
+
+/// Drain the seek channel, returning the most recent target (if any). A burst
+/// of seeks collapses to the newest playhead — intermediate positions would
+/// only waste a reader reposition.
+fn recv_seek(seek_rx: &Option<Receiver<f64>>) -> Option<f64> {
+    let rx = seek_rx.as_ref()?;
+    let mut last = None;
+    while let Ok(target) = rx.try_recv() {
+        last = Some(target);
+    }
+    last
+}
+
+/// Reposition a live pass to `target` PTS seconds after a playhead jump: clear
+/// the VAD model and buffered utterance, drop cues decoded from pre-seek audio,
+/// and `seek()` the WAV reader to the matching 16 kHz frame. `min_cue_time` is
+/// raised so no cue starting before the seek can reach the UI afterwards.
+fn apply_seek(
+    target: f64,
+    reader: &mut hound::WavReader<std::io::BufReader<std::fs::File>>,
+    utterance: &mut UtteranceBuilder,
+    vad: &mut SileroVad,
+    min_cue_time: &mut f64,
+    samples_read: &mut u64,
+    frame: &mut Vec<f32>,
+    seg_rx: &Receiver<SubtitleCue>,
+) -> Result<(), String> {
+    let target = target.max(0.0);
+    *min_cue_time = target;
+    utterance.reset();
+    vad.reset();
+    frame.clear();
+    // A chunk decode that raced past the seek may still hold pre-seek cues.
+    while let Ok(_) = seg_rx.try_recv() {}
+    let sample_index = (target * SAMPLE_RATE as f64).round() as u32;
+    reader
+        .seek(sample_index)
+        .map_err(|e| format!("Failed to reposition transcription to {:.2}s: {}", target, e))?;
+    *samples_read = sample_index as u64;
+    Ok(())
 }
 
 fn report_progress(samples_read: u64, total_samples: u64, on_progress: &mut impl FnMut(f64)) {
@@ -462,5 +560,39 @@ mod tests {
         assert_eq!(seen, vec![100.0]);
         // Empty audio never reports; guarded against divide-by-zero.
         report_progress(0, 0, &mut |_| panic!("no progress for empty audio"));
+    }
+
+    #[test]
+    fn utterance_builder_reset_drops_buffered_speech_and_clears_state() {
+        let mut ub = UtteranceBuilder::new(100_000, 100, 10);
+        let speech = vec![0.5f32; VAD_FRAME];
+        for i in 0..5u64 {
+            assert!(ub.accumulate(true, &speech, i * VAD_FRAME as u64).is_none());
+        }
+        assert!(ub.needs_flush());
+
+        ub.reset();
+
+        // The pre-seek utterance is gone: no flush, no buffered audio.
+        assert!(!ub.needs_flush());
+        assert_eq!(ub.take_chunk().len(), 0);
+        // The next speech frame re-opens a fresh utterance from its own PTS.
+        let base = 2 * SAMPLE_RATE as u64;
+        assert!(ub.accumulate(true, &speech, base).is_none());
+        assert!(ub.needs_flush());
+        assert_eq!(ub.flush_start(), 2.0);
+    }
+
+    #[test]
+    fn recv_seek_takes_latest_target_from_a_burst() {
+        let (tx, rx) = unbounded::<f64>();
+        assert!(recv_seek(&None).is_none());
+        assert!(recv_seek(&Some(rx.clone())).is_none());
+
+        tx.send(4.0).unwrap();
+        tx.send(8.0).unwrap();
+        tx.send(12.5).unwrap();
+        assert_eq!(recv_seek(&Some(rx.clone())), Some(12.5));
+        assert!(recv_seek(&Some(rx)).is_none());
     }
 }

@@ -158,6 +158,24 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     }
   };
 
+  // Realtime (streaming) jobs decode audio in lock-step with the playhead. When
+  // that playhead jumps — seek bar, skip keys, or an editor click-to-seek — the
+  // active Rust pass must drop its VAD/utterance state and reposition its WAV
+  // reader to the new position, or it keeps generating subtitles for audio we
+  // already skipped. Batch jobs surface everything up-front, so they never seek.
+  const notifyPipelineSeek = (target: number) => {
+    const s = useAppStore.getState();
+    if (!isTauri()) return;
+    if (!s.isTranscribing || isBatchRef.current) return;
+    const videoPath = streamingPathRef.current || s.currentVideoPath;
+    if (!videoPath) return;
+    void TauriService.seekTranscription(videoPath, target).catch((err) => {
+      console.error("Failed to notify transcription seek:", err);
+    });
+  };
+  const notifyPipelineSeekRef = useRef<(target: number) => void>(() => {});
+  notifyPipelineSeekRef.current = notifyPipelineSeek;
+
   const handleMouseMove = () => {
     setShowControls(true);
     if (controlsTimeoutRef.current) {
@@ -193,6 +211,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       const newTime = parseFloat(e.target.value);
       videoRef.current.currentTime = newTime;
       setCurrentTime(newTime);
+      notifyPipelineSeekRef.current(newTime);
     }
   };
 
@@ -205,6 +224,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       );
       videoRef.current.currentTime = next;
       setCurrentTime(next);
+      notifyPipelineSeekRef.current(next);
     }
   };
 
@@ -214,6 +234,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
       const next = Math.max(0, videoRef.current.currentTime - seconds);
       videoRef.current.currentTime = next;
       setCurrentTime(next);
+      notifyPipelineSeekRef.current(next);
     }
   };
 
@@ -320,6 +341,7 @@ export const VideoPlayer = ({ onEditSubtitles }: { onEditSubtitles?: () => void 
     pendingSeekRef.current = true;
     video.currentTime = target;
     setCurrentTime(target);
+    notifyPipelineSeekRef.current(target);
     pendingSeekTimeoutRef.current = setTimeout(() => {
       pendingSeekRef.current = false;
       pendingSeekTimeoutRef.current = null;

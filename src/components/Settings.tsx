@@ -121,6 +121,8 @@ export const SettingsComponent = () => {
     setWhisperModel,
     subtitleStyle,
     setSubtitleStyle,
+    transcriptionMode,
+    setTranscriptionMode,
     downloadedModels,
     downloadingModels,
     modelDownloadProgress,
@@ -214,6 +216,42 @@ export const SettingsComponent = () => {
             Update feature is only available in the desktop app.
           </p>
         )}
+      </section>
+
+      {/* Transcription Mode */}
+      <section className="space-y-2">
+        <label className={`block text-sm font-medium ${labelClass(theme)}`}>
+          Transcription Mode
+        </label>
+        <p className={`text-xs ${labelClass(theme)}`}>
+          Realtime streams a new caption the moment Whisper decodes it, so subtitles appear as you watch. Full (Batch) transcribes the entire audio before playback, then surfaces perfectly-synced captions with zero lag.
+        </p>
+        <div className={`flex p-0.5 rounded-lg border ${controlClass(theme)}`}>
+          <button
+            onClick={() => setTranscriptionMode("stream")}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors flex-1 ${
+              transcriptionMode === "stream"
+                ? "bg-zan-cyan/15 text-zan-cyan"
+                : theme === 'dark'
+                  ? "text-gray-400 hover:text-white"
+                  : "text-gray-500 hover:text-gray-900"
+            }`}
+          >
+            Realtime (Streaming)
+          </button>
+          <button
+            onClick={() => setTranscriptionMode("batch")}
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors flex-1 ${
+              transcriptionMode === "batch"
+                ? "bg-zan-cyan/15 text-zan-cyan"
+                : theme === 'dark'
+                  ? "text-gray-400 hover:text-white"
+                  : "text-gray-500 hover:text-gray-900"
+            }`}
+          >
+            Full (Batch)
+          </button>
+        </div>
       </section>
 
       {/* Models */}
