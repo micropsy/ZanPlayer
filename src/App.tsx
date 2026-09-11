@@ -8,7 +8,6 @@ import { listen, emit } from '@tauri-apps/api/event';
 import { TauriService, isTauri } from './services/tauri';
 import { checkForUpdates } from './services/updater';
 import { UpdateModal } from './components/UpdateModal';
-import { translationService } from './services/translation';
 
 // Helper functions to check file types
 const isVideoFile = (fileName: string): boolean => {
@@ -129,7 +128,7 @@ function App() {
           setCurrentVideo(null); // Clear any File object
           setCurrentVideoUrl(url);
           setCurrentVideoPath(filePath);
-          emit('zanplayer:video-dropped');
+          emit('zanplayer-lite:video-dropped');
         } catch (error) {
           console.error('Failed to load video/audio:', error);
         }
@@ -166,18 +165,6 @@ function App() {
     startupUpdateCheckRef.current = true;
     if (!useAppStore.getState().autoCheckUpdates) return;
     void checkForUpdates('background');
-  }, []);
-
-  // Warm up the offline NLLB translation model in the background so realtime
-  // translated captions start flowing the moment a video is loaded, instead of
-  // stalling until the user opens Settings. Non-intrusive progress surfaces via
-  // the store ("Loading Translator..." pill in the player controls).
-  const startupTranslationLoadRef = useRef(false);
-  useEffect(() => {
-    if (!isTauri()) return;
-    if (startupTranslationLoadRef.current) return;
-    startupTranslationLoadRef.current = true;
-    void translationService.autoLoadIfInstalled();
   }, []);
 
   useEffect(() => {

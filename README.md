@@ -1,6 +1,21 @@
-# ZanPlayer
+# ZanPlayer Lite
 
-A modern, beautiful desktop video player with **local, offline, AI-powered subtitle generation and translation**, built with Tauri 2, React 19, TypeScript, and Tailwind CSS v4. **100% offline-first** — no external API keys, no cloud calls required.
+A modern, beautiful desktop video player with **local, offline, AI-powered subtitle generation**, built with Tauri 2, React 19, TypeScript, and Tailwind CSS v4. **100% offline-first** — no external API keys, no cloud calls required.
+
+> **ZanPlayer Lite is a complete re-architecture around a Native Whisper Core.** All transcriptions *and* translations run through a single local `whisper-rs` (whisper.cpp) engine. The legacy NLLB translation stack and every Python/ONNX dependency were **fully removed** — there is no Python runtime, no onnxruntime, no `@xenova` Transformers, no Web Worker, and no translation microservice in the app or its shipped bundles.
+
+## Architecture — Native Whisper Core & Dual-Pass Inference
+
+Everything below executes on your machine, on native threads:
+
+- **Native Whisper Core** — speech recognition *and* translation both use `whisper-rs` (whisper.cpp). Models are downloaded from Settings and run locally.
+- **Dual-Pass Inference** — whisper.cpp cannot emit the original language and an English translation in a single pass, so ZanPlayer Lite runs one or two passes over the *same* 16 kHz mono audio buffer (extracted by the bundled FFmpeg sidecar):
+  - **Original Only** → `params.translate = false` (source-language captions)
+  - **English Only** → `params.translate = true` (whisper's translate task)
+  - **Both (Dual)** → two passes tagged `original` / `translation`; the UI render queue merges their (PTS-synced) cues into stacked dual subtitles
+  - The English target is never hardcoded — the pass plan follows the selected output mode, and the **Spoken Audio (Source)** selector pins whisper's language token to prevent hallucinations on low-resource languages (e.g. Burmese).
+- **VAD-gated streaming** — `silero-vad-pure` detects speech utterances and feeds them to whisper in chunks, so cues stream in live while you watch.
+- **Two generation strategies** (see below).
 
 ## Features
 
@@ -8,41 +23,38 @@ A modern, beautiful desktop video player with **local, offline, AI-powered subti
 - 🎬 Modern video/audio player with seek bar, volume, mute, and fullscreen
 - 🖱️ Drag-and-drop support for video, audio, and subtitle files (`.srt` / `.vtt` / `.ass` / `.ssa`)
 - 📱 Responsive layout with a toggleable sidebar
-- ⏯️ Automatic pause with a **"Transcribing Audio... Please wait"** overlay during a first-time transcription of a new video, then auto-resume so the beginning of the subtitles is never missed
 - 🔄 Auto-updater via GitHub releases
 
 ### Subtitles
-- 📑 Multiple display modes: **Original only**, **Translated only**, or **Dual** (both languages on screen)
-- 🎚️ CC menu with subtitle toggle, **Spoken Audio (Source)** selector, **Language** (translation target), and **Caption Mode**
+- 📑 Multiple output modes: **Original only**, **English only**, or **Dual** (both languages on screen)
+- 🎚️ CC menu with subtitle toggle, **Spoken Audio (Source)**, **Subtitle Output**, and **Generation** (Realtime / Full-Batch) selectors
 - 🎨 Styled subtitle overlay — font family, size, colors, outline, bold/italic, alignment (top/bottom)
 - 📄 Load existing subtitle files (SRT, VTT, ASS/SSA)
 - 💾 Export subtitles in SRT or VTT (backend also supports ASS)
 - ✏️ Full subtitle editor: real-time text editing, cue timing, add/delete cues, and shifting all cues by an offset
+- 🎯 **Click-to-seek**: click any cue in the subtitle editor and the player jumps to that cue's start time — with instant, race-free highlight feedback (a stale `timeupdate` report can never yank the highlight back)
+
+### Projects
+- 🗂️ **Save/Load sessions (`.zan`)** — serialize the entire workspace to a `.zan` JSON project file: the media file path, the generated dual-pass subtitle tracks (Original + English), the selected output/generation mode, source language, subtitle styling, and playhead position.
+- ⚡ **Instant restore** — loading a project hydrates the store directly and **bypasses Whisper inference entirely**: no re-transcription, no model reload; the exact UI state (tracks, styles, modes) reappears the moment the file is opened.
+- ✅ **Media validation** — loading verifies the stored video path still exists, warns if the file has moved or been deleted, and restores subtitles regardless.
 
 ### AI (100% local)
-- 🗣️ **Transcription with Whisper** (`whisper-rs`) — models run on your machine
-  - **Spoken Audio (Source)** selector (Auto-Detect / Burmese / English) forces the Whisper language token, preventing English hallucinations on low-resource languages such as Burmese
-  - Model manager in Settings downloads/removes Whisper models (tiny → large)
-- 🌐 **Translation with NLLB-200** (distilled 600M, int8-quantized) via Transformers.js + ONNX Runtime Web
-  - Runs in a dedicated Web Worker, so the UI never freezes during translation
-  - ~900 MB one-time download from Settings, cached locally for fully offline use
-  - 14 selectable target languages (FLORES-200 codes):
-
-  | Language | FLORES-200 | Language | FLORES-200 |
-  |----------|-----------|----------|-----------|
-  | English | `eng_Latn` | Chinese (Simplified) | `zho_Hans` |
-  | Spanish | `spa_Latn` | Portuguese | `por_Latn` |
-  | Burmese | `mya_Mymr` | Russian | `rus_Cyrl` |
-  | French | `fra_Latn` | Thai | `tha_Thai` |
-  | German | `deu_Latn` | Vietnamese | `vie_Latn` |
-  | Japanese | `jpn_Jpan` | Hindi | `hin_Deva` |
-  | Korean | `kor_Hang` | Arabic | `arb_Arab` |
+- 🗣️ **Transcription + translation with Whisper** (`whisper-rs`, native whisper.cpp) — models run on your machine
+  - **Dual-pass inference** (see [Architecture](#architecture--native-whisper-core--dual-pass-inference)): whisper.cpp cannot emit original + English in one pass, so ZanPlayer Lite runs one or two passes over the same audio, driven by the selected output mode:
+    - **Original Only** → `params.translate = false`
+    - **English Only** → `params.translate = true`
+    - **Both (Dual)** → two passes over the exact same audio buffer; the UI render queue merges their timestamps into stacked dual subtitles
+  - **Dynamic target language**: whisper's task flag follows the user's choice — never hardcoded to English
+  - **Spoken Audio (Source)** selector (Auto-Detect / Burmese / English / 12+ languages) pins the whisper language token, preventing hallucinations on low-resource languages such as Burmese
+  - **Realtime (Streaming)**: VAD-gated chunked decode streams cues as they land. For "Both", the transcribe and translate passes run on **separate asynchronous threads** so dual subtitles never lag the video
+  - **Full (Batch)**: the entire audio track is transcribed (and translated) sequentially before playback begins, guaranteeing perfectly-synced, zero-latency dual subtitles
+  - Model manager in Settings downloads/removes Whisper models (tiny → base → small → medium → large)
 
 ### Settings
 - 🎨 Theme preferences (light/dark)
 - 🔤 Custom subtitle styling (font family, size, colors) with real-time preview
 - 🤖 Whisper model management (download/delete models)
-- 🌐 NLLB-200 translation model management (download with progress bar / delete)
 - 🔄 Update checker
 
 ## Keyboard Shortcuts
@@ -67,15 +79,14 @@ A modern, beautiful desktop video player with **local, offline, AI-powered subti
 
 ### Steps
 ```bash
-git clone https://github.com/micropsy/ZanPlayer.git
-cd ZanPlayer
+git clone https://github.com/micropsy/ZanPlayer-Lite.git
+cd ZanPlayer-Lite
 npm install
 npm run tauri dev
 ```
 
 ### Build & release
 ```bash
-npm run bundle:wasm   # regenerate public/onnx/ from node_modules/onnxruntime-web (runs automatically in CI)
 npm run build         # type-check (tsc) + frontend build (vite)
 npm run tauri build   # full desktop bundles (app, dmg, AppImage, deb, msi)
 npm run release -- patch   # semantic-version release pipeline (see RELEASE_PROCESS.md)
@@ -83,36 +94,31 @@ npm run release -- patch   # semantic-version release pipeline (see RELEASE_PROC
 
 ## Offline AI — Where Things Live
 
-- **Whisper models** → app data `models/` directory, downloaded from Settings.
-- **NLLB-200 translation model** → app data `nllb-200/` directory, downloaded with a progress bar from Settings and warmed into the browser Cache API so the Web Worker can load it entirely offline.
-- **ONNX Runtime WASM assets** → bundled into the app at build time via `npm run bundle:wasm` (copies from `node_modules/onnxruntime-web/dist` to `public/onnx/`). No runtime CDN dependency.
+- **Whisper models** → app data `models/` directory, downloaded from Settings. Everything — transcription **and** translation — runs through the same native whisper.cpp engine (`whisper-rs`): **no NLLB, no ONNX Runtime, no Web Worker**.
+- **FFmpeg** → bundled as a Tauri sidecar (`src-tauri/binaries/`) for audio extraction to 16 kHz mono WAV.
 
 ## Project Structure
 
 ```
-ZanPlayer/
+ZanPlayer Lite/
 ├── src/                        # Frontend (React 19 + TypeScript)
 │   ├── App.tsx                 # Root layout + drag-and-drop handling
 │   ├── components/
-│   │   ├── Sidebar.tsx         # Open/export subtitles, track list
-│   │   ├── VideoPlayer.tsx     # Player, overlays, CC menu, Whisper + translation wiring
-│   │   ├── Settings.tsx        # Theme, styles, Whisper/NLLB model managers
-│   │   └── SubtitleEditor.tsx  # Timeline/text editing side panel
+│   │   ├── Sidebar.tsx         # Open/export subtitles, save/load .zan projects, track list
+│   │   ├── VideoPlayer.tsx     # Player, overlays, CC menu (output/generation modes + dual display), click-to-seek dispatch
+│   │   ├── Settings.tsx        # Theme, styles, Whisper model manager
+│   │   └── SubtitleEditor.tsx  # Timeline/text editing, click-to-seek by cue
 │   ├── services/
 │   │   ├── tauri.ts            # Typed wrappers for Rust commands
-│   │   ├── store.ts            # Zustand store (persisted state)
-│   │   └── translation.ts      # NLLB model download/cache + worker bridge
-│   ├── workers/
-│   │   └── translation.worker.ts  # Transformers.js NLLB-200 pipeline in a Web Worker
+│   │   └── store.ts            # Zustand store (persisted state)
 │   ├── types/subtitle.ts       # Subtitle / cue / track types
 │   └── utils/                  # cn, subtitleExporter
 ├── scripts/
-│   ├── bundle-wasm.mjs         # Copy onnxruntime WASM → public/onnx/
 │   └── release.mjs             # SemVer release automation
-├── public/
-│   └── onnx/                   # Bundled ONNX Runtime WASM (generated, gitignored)
+├── public/                     # Static assets
 ├── src-tauri/                  # Backend (Rust/Tauri)
-│   ├── src/main.rs             # Commands: whisper, ffmpeg, subtitles, model/NLLB downloads
+│   ├── src/main.rs             # Commands: whisper dual-pass jobs, ffmpeg, subtitles, model downloads
+│   ├── src/pipeline.rs         # Silero VAD -> chunked Whisper decode (translate on/off) -> PTS sync
 │   ├── Cargo.toml / tauri.conf.json
 │   └── capabilities/main.json  # Tauri 2 permissions
 └── .github/workflows/build.yml # CI: builds + creates releases for all 4 platforms
@@ -124,8 +130,8 @@ ZanPlayer/
 - **Frontend**: React 19 + TypeScript
 - **Styling**: Tailwind CSS v4
 - **State Management**: Zustand (with persistence)
-- **Transcription AI**: whisper-rs (local Whisper models)
-- **Translation AI**: Transformers.js (`@xenova/transformers`) + onnxruntime-web (WASM) — NLLB-200
+- **Transcription / Translation AI**: whisper-rs (native whisper.cpp, local models)
+- **Voice Activity Detection**: silero-vad-pure
 - **Build Tool**: Vite 8
 - **Icon Library**: Lucide React
 - **CI/Release**: GitHub Actions matrix (macOS x64/aarch64, Linux x64, Windows x64) + `tauri-action`
@@ -133,17 +139,19 @@ ZanPlayer/
 ## Usage
 
 1. Launch the app, then drag-and-drop a video/audio file or use the sidebar open button.
-2. Enable subtitles (CC). The first time, the video auto-pauses while Whisper transcribes locally, then resumes.
-3. In Settings, download a Whisper model (if not present) and — for translation — the NLLB-200 model (~900 MB, one-time, offline after that).
-4. To keep low-resource audio (e.g. Burmese) from hallucinating English, set **CC → Spoken Audio (Source) → Burmese**.
-5. Pick a translation target via **CC → Language** (e.g. English) to get local NLLB translation; switch between Original/Translated/Dual in **Caption Mode**.
-6. Edit cues in the sidebar editor and export when ready.
+2. Enable subtitles (CC). Transcription runs locally and streams in as cues are decoded.
+3. In Settings, download a Whisper model if not present.
+4. Choose **CC → Subtitle Output**: *Original* (source-speech captions), *English* (whisper's translate task), or *Both* (two parallel passes, dual lines on screen).
+5. Choose **CC → Generation**: *Realtime* streams while you watch; *Full (Batch)* transcribes the entire audio before playback for perfectly-synced zero-latency dual subtitles.
+6. To keep low-resource audio (e.g. Burmese) from hallucinating English, set **CC → Spoken Audio (Source) → Burmese**.
+7. Edit cues in the sidebar editor and export when ready. **Click any cue** to jump the player (and the editor highlight) straight to that moment.
+8. **Save Project** (in the sidebar) writes a `.zan` file capturing the video, dual tracks, modes, and styling. **Load Project** restores the whole workspace instantly — transcription is never re-run.
 
 ## Future Plans
 
-- [ ] Project save/load
-- [ ] Tests for frontend and backend
-- [ ] Click-to-seek from the subtitle editor into the player
+- [x] Tests for frontend and backend
+- [x] Click-to-seek from the subtitle editor into the player
+- [x] Project save/load (`.zan`)
 
 ## Contributing
 
@@ -157,6 +165,7 @@ MIT
 
 - [Tauri](https://tauri.app/) — for the amazing desktop framework
 - [whisper-rs](https://github.com/tazz4843/whisper-rs) — for local Whisper inference
-- [Transformers.js](https://github.com/xenova/transformers.js) — for in-browser NLLB models
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — for the native inference engine
+- [silero-vad-pure](https://github.com/lmnt-com/silero-vad-pure) — for voice activity detection
 - [FFmpeg](https://ffmpeg.org/) — for video/audio processing
 - Everyone who contributes to open source!

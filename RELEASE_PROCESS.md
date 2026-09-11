@@ -1,6 +1,6 @@
 # Release Process (Standard Operating Procedure)
 
-Strict checklist for **any AI agent or human developer** preparing a release of **ZanPlayer**.
+Strict checklist for **any AI agent or human developer** preparing a release of **ZanPlayer Lite**.
 Follow it exactly. Do not skip steps. Do not guess versions.
 
 ## 1. Determine the release type (Semantic Versioning, `MAJOR.MINOR.PATCH`)
@@ -23,13 +23,10 @@ Always read the current version from `package.json` first — never guess or har
    - `package.json`
    - `package-lock.json` (root entry + `packages[""]`)
    - `src-tauri/Cargo.toml` (`[package] -> version`)
-   - `src-tauri/Cargo.lock` (the `[[package]] name = "zanplayer"` block)
+   - `src-tauri/Cargo.lock` (the `[[package]] name = "zanplayer-lite"` block)
    - `src-tauri/tauri.conf.json` (`version`)
 
    Tauri requires all of them to match; drift breaks the build and the updater.
-
-   > `public/onnx/` is a generated, gitignored directory (`npm run bundle:wasm`) — local
-   > WASM assets never affect the clean-tree check; CI regenerates them itself.
 
 ## 3. Release (preferred — automated)
 
@@ -78,8 +75,7 @@ npm run release -- patch --dry-run
 2. Confirm a run started in the repo's **Actions** tab and that all matrix jobs pass
    (macOS x64, macOS aarch64, Linux x64, Windows x64).
 3. Each runner:
-   - Installs frontend deps (`npm ci`) and regenerates the ONNX Runtime WASM assets
-     with `npm run bundle:wasm` (`public/onnx/` is gitignored and never committed),
+   - Installs frontend deps (`npm ci`),
    - fetches the platform FFmpeg sidecar,
    - runs `tauri-action@v0` with `permissions: contents: write` and explicit release
      metadata (`releaseName`, `releaseBody`, `releaseDraft: false`, `prerelease: false`)

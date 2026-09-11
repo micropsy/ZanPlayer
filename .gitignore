@@ -6,9 +6,6 @@ dist/
 out/
 target/
 
-# Generated onnxruntime WASM assets (regenerate via: npm run bundle:wasm)
-public/onnx/
-
 # IDE
 .vscode/
 .idea/
@@ -42,4 +39,4 @@ backups/
 src-tauri/app-icon.png
 
 # Local build/ship artifacts
-ZanPlayer-macos.zip
+ZanPlayer Lite-macos.zip

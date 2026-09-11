@@ -11,9 +11,11 @@ import {
   FileText,
   FileVideo,
   Menu,
+  Save,
+  FolderOpen,
 } from "lucide-react";
 import { emit } from "@tauri-apps/api/event";
-import { TauriService } from "../services/tauri";
+import { TauriService, type ProjectData } from "../services/tauri";
 import { SettingsComponent } from "./Settings";
 import { cn } from "../utils/cn";
 import type { SubtitleTrack } from "../types/subtitle";
@@ -28,11 +30,10 @@ export const Sidebar = () => {
     resetSubtitles,
     activeSubtitleTrackId,
     setActiveSubtitleTrackId,
-    activeTranslatedTrackId,
-    setActiveTranslatedTrackId,
     currentVideo,
     setCurrentVideo,
     setCurrentVideoPath,
+    currentVideoPath,
     shiftAllCues,
     theme,
     setSidebarVisible,
@@ -211,7 +212,7 @@ export const Sidebar = () => {
         const url = await TauriService.getVideoBlobUrl(videoFile.path);
         setCurrentVideoUrl(url);
         setCurrentVideoPath(videoFile.path);
-        emit("zanplayer:video-dropped");
+        emit("zanplayer-lite:video-dropped");
       }
     } catch (error) {
       setErrorMessage(`Error selecting video: ${(error as Error).message}`);
@@ -249,11 +250,6 @@ export const Sidebar = () => {
       if (track) tracksToExport.push({ track, suffix: `-${track.language.toLowerCase()}` });
     }
 
-    if (activeTranslatedTrackId) {
-      const track = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
-      if (track) tracksToExport.push({ track, suffix: `-${track.language.toLowerCase()}` });
-    }
-
     if (tracksToExport.length === 0) {
       alert("Please select at least one subtitle track");
       return;
@@ -275,6 +271,51 @@ export const Sidebar = () => {
     setShowExportOptions(false);
   };
 
+  const handleSaveProject = async () => {
+    if (!currentVideoPath) return;
+    setErrorMessage(null);
+    try {
+      const savePath = await TauriService.saveProjectDialog();
+      if (!savePath) return;
+      const state = useAppStore.getState();
+      const projectData: ProjectData = {
+        version: 1,
+        videoPath: state.currentVideoPath!,
+        subtitleTracks: state.subtitleTracks,
+        activeSubtitleTrackId: state.activeSubtitleTrackId,
+        showSubtitles: state.showSubtitles,
+        subtitleMode: state.subtitleMode,
+        transcriptionMode: state.transcriptionMode,
+        sourceLanguage: state.sourceLanguage,
+        subtitleStyle: state.subtitleStyle,
+        currentTime: state.currentTime,
+      };
+      await TauriService.writeProjectFile(savePath, projectData);
+    } catch (error) {
+      setErrorMessage(`Error saving project: ${(error as Error).message}`);
+    }
+  };
+
+  const handleLoadProject = async () => {
+    setErrorMessage(null);
+    try {
+      const filePath = await TauriService.openProjectDialog();
+      if (!filePath) return;
+      const { project, mediaExists } = await TauriService.readProjectFile(filePath);
+      if (!mediaExists) {
+        setErrorMessage(
+          `Video file not found: ${project.videoPath}. Subtitles and settings were restored, but playback will be unavailable.`
+        );
+      }
+      // Hydrates every field in one store write (see store.ts `loadProject`);
+      // because subtitle tracks are populated before the video path effect runs,
+      // Whisper inference is bypassed entirely for a loaded project.
+      useAppStore.getState().loadProject(project);
+    } catch (error) {
+      setErrorMessage(`Error loading project: ${(error as Error).message}`);
+    }
+  };
+
   const handleDeleteTrack = (trackId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm("Are you sure you want to delete this subtitle track?")) {
@@ -282,9 +323,6 @@ export const Sidebar = () => {
       setSubtitleTracks(updatedTracks);
       if (activeSubtitleTrackId === trackId) {
         setActiveSubtitleTrackId(null);
-      }
-      if (activeTranslatedTrackId === trackId) {
-        setActiveTranslatedTrackId(null);
       }
     }
   };
@@ -296,7 +334,7 @@ export const Sidebar = () => {
     }
   };
 
-  const hasTracks = !!(activeSubtitleTrackId || activeTranslatedTrackId);
+  const hasTracks = !!activeSubtitleTrackId;
 
 
 
@@ -330,10 +368,10 @@ export const Sidebar = () => {
         <div className="flex items-center gap-3 px-4 py-3">
           <img 
             src="/logo.png" 
-            alt="ZanPlayer" 
+            alt="ZanPlayer Lite" 
             className="w-10 h-10 rounded-lg"
           />
-          <span className="text-xl font-bold text-white">ZanPlayer</span>
+          <span className="text-xl font-bold text-white">ZanPlayer Lite</span>
         </div>
         <button
           onClick={() => setActiveTab("main")}
@@ -446,6 +484,35 @@ export const Sidebar = () => {
                 Load Subtitle File
               </button>
 
+              <div className="flex gap-2">
+                {currentVideoPath && (
+                  <button
+                    onClick={handleSaveProject}
+                    className={cn(
+                      "flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl transition-all",
+                      theme === "dark"
+                        ? "bg-gray-800 hover:bg-gray-700 text-white"
+                        : "bg-gray-100 hover:bg-gray-200 text-gray-900"
+                    )}
+                  >
+                    <Save className="w-5 h-5" />
+                    Save Project
+                  </button>
+                )}
+                <button
+                  onClick={handleLoadProject}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl transition-all",
+                    theme === "dark"
+                      ? "bg-gray-800 hover:bg-gray-700 text-white"
+                      : "bg-gray-100 hover:bg-gray-200 text-gray-900"
+                  )}
+                >
+                  <FolderOpen className="w-5 h-5" />
+                  Load Project
+                </button>
+              </div>
+
               {/* Export Options */}
               {hasTracks && (
                 <div className="relative">
@@ -528,19 +595,13 @@ export const Sidebar = () => {
                 <div
                   key={track.id}
                   onClick={() => {
-                    if (track.isTranslated) {
-                      setActiveTranslatedTrackId(
-                        activeTranslatedTrackId === track.id ? null : track.id
-                      );
-                    } else {
-                      setActiveSubtitleTrackId(
-                        activeSubtitleTrackId === track.id ? null : track.id
-                      );
-                    }
+                    setActiveSubtitleTrackId(
+                      activeSubtitleTrackId === track.id ? null : track.id
+                    );
                   }}
                   className={cn(
                     "relative p-4 rounded-xl border transition-all cursor-pointer group",
-                    (activeSubtitleTrackId === track.id || activeTranslatedTrackId === track.id)
+                    activeSubtitleTrackId === track.id
                       ? "bg-blue-900/20 border-blue-500 shadow-lg shadow-blue-900/10"
                       : theme === "dark"
                         ? "bg-gray-800 border-gray-700 hover:bg-gray-750 hover:border-gray-600"
@@ -551,7 +612,7 @@ export const Sidebar = () => {
                     <div>
                       <h4 className={cn(
                         "font-semibold text-sm",
-                        (activeSubtitleTrackId === track.id || activeTranslatedTrackId === track.id)
+                        activeSubtitleTrackId === track.id
                           ? "text-blue-300"
                           : theme === "dark"
                             ? "text-white"
@@ -570,11 +631,6 @@ export const Sidebar = () => {
                           Generated
                         </span>
                       )}
-                      {track.isTranslated && (
-                        <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-400 rounded-full font-medium">
-                          Translated
-                        </span>
-                      )}
                       <button
                         onClick={(e) => handleDeleteTrack(track.id, e)}
                         className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-500/20 rounded-lg text-gray-400 hover:text-red-400 transition-all"
@@ -585,37 +641,35 @@ export const Sidebar = () => {
                   </div>
 
                   {/* Shift controls for original track */}
-                  {!track.isTranslated && (
-                    <div className={cn(
-                      "mt-2 pt-2 border-t",
-                      theme === "dark" ? "border-gray-700" : "border-gray-200"
-                    )}>
-                      <label className={cn(
-                        "text-xs mb-1 block",
-                        theme === "dark" ? "text-gray-500" : "text-gray-500"
-                      )}>Shift all (seconds)</label>
-                      <div className="flex gap-2">
-                        <input
-                          type="number"
-                          value={shiftOffset}
-                          onChange={(e) => setShiftOffset(e.target.value)}
-                          step="0.1"
-                          className={cn(
-                            "flex-1 px-2 py-1 border rounded text-sm",
-                            theme === "dark"
-                              ? "bg-gray-900 border-gray-700 text-white"
-                              : "bg-white border-gray-300 text-gray-900"
-                          )}
-                        />
-                        <button
-                          onClick={() => handleShiftAllCues(track.id)}
-                          className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm"
-                        >
-                          Shift
-                        </button>
-                      </div>
+                  <div className={cn(
+                    "mt-2 pt-2 border-t",
+                    theme === "dark" ? "border-gray-700" : "border-gray-200"
+                  )}>
+                    <label className={cn(
+                      "text-xs mb-1 block",
+                      theme === "dark" ? "text-gray-500" : "text-gray-500"
+                    )}>Shift all (seconds)</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        value={shiftOffset}
+                        onChange={(e) => setShiftOffset(e.target.value)}
+                        step="0.1"
+                        className={cn(
+                          "flex-1 px-2 py-1 border rounded text-sm",
+                          theme === "dark"
+                            ? "bg-gray-900 border-gray-700 text-white"
+                            : "bg-white border-gray-300 text-gray-900"
+                        )}
+                      />
+                      <button
+                        onClick={() => handleShiftAllCues(track.id)}
+                        className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm"
+                      >
+                        Shift
+                      </button>
                     </div>
-                  )}
+                  </div>
                 </div>
               ))}
               {subtitleTracks.length === 0 && (

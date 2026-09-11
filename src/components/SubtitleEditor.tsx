@@ -1,7 +1,8 @@
 import { X, Trash2, Plus } from "lucide-react";
+import { useEffect, useRef } from "react";
+import type { FormEvent, KeyboardEvent } from "react";
 import { useAppStore } from "../services/store";
 import { cn } from "../utils/cn";
-import type { FormEvent } from "react";
 
 interface SubtitleEditorProps {
   onClose: () => void;
@@ -26,8 +27,9 @@ const formatEditorTime = (seconds: number) => {
 export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
   const subtitleTracks = useAppStore((s) => s.subtitleTracks);
   const activeSubtitleTrackId = useAppStore((s) => s.activeSubtitleTrackId);
-  const activeTranslatedTrackId = useAppStore((s) => s.activeTranslatedTrackId);
+  const currentTime = useAppStore((s) => s.currentTime);
   const setSeekTo = useAppStore((s) => s.setSeekTo);
+  const setCurrentTime = useAppStore((s) => s.setCurrentTime);
   const updateCue = useAppStore((s) => s.updateCue);
   const updateCueTiming = useAppStore((s) => s.updateCueTiming);
   const deleteCue = useAppStore((s) => s.deleteCue);
@@ -35,7 +37,38 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
   const theme = useAppStore((s) => s.theme);
 
   const originalTrack = subtitleTracks.find((t) => t.id === activeSubtitleTrackId);
-  const translatedTrack = subtitleTracks.find((t) => t.id === activeTranslatedTrackId);
+
+  // Cue card currently under the playhead (same inclusive window the player
+  // overlay uses), so the editor highlights match the on-screen subtitle.
+  const activeCueId = originalTrack?.cues.find(
+    (cue) => currentTime >= cue.startTime && currentTime <= cue.endTime
+  )?.id;
+
+  // Ref map so the follow-along scroll can bring the active cue into view.
+  const cueRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  useEffect(() => {
+    if (!activeCueId) return;
+    cueRefs.current[activeCueId]?.scrollIntoView?.({ block: "nearest" });
+  }, [activeCueId]);
+
+  // Clicking a cue jumps the player to its start time. The store clock is
+  // advanced optimistically as well, so the active-cue highlight moves the same
+  // frame as the click instead of waiting on a media `timeupdate`; the player
+  // guards the live clock against stale interim reports while the seek lands.
+  const seekPlayerToCue = (startTime: number) => {
+    setSeekTo(startTime);
+    setCurrentTime(startTime);
+  };
+
+  const handleCueKeyDown = (
+    e: KeyboardEvent<HTMLDivElement>,
+    startTime: number
+  ) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      seekPlayerToCue(startTime);
+    }
+  };
 
   const inputCls = cn(
     "w-[76px] px-2 py-1 border rounded-md text-right font-mono text-xs focus:outline-none focus:border-zan-cyan focus:ring-1 focus:ring-zan-cyan/30",
@@ -89,17 +122,28 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-2">
-        {originalTrack?.cues.map((originalCue, index) => {
-          const translatedCue = translatedTrack?.cues[index];
+        {originalTrack?.cues.map((originalCue) => {
+          const isActive = originalCue.id === activeCueId;
           return (
             <div
               key={originalCue.id}
-              onClick={() => setSeekTo(originalCue.startTime)}
+              ref={(el) => {
+                cueRefs.current[originalCue.id] = el;
+              }}
+              role="button"
+              tabIndex={0}
+              aria-current={isActive ? "true" : undefined}
+              data-cue-id={originalCue.id}
+              data-cue-active={isActive}
+              onClick={() => seekPlayerToCue(originalCue.startTime)}
+              onKeyDown={(e) => handleCueKeyDown(e, originalCue.startTime)}
               className={cn(
                 "rounded-lg border p-2 transition-all cursor-pointer",
-                theme === "dark"
-                  ? "bg-gray-800 border-gray-700 hover:border-zan-cyan hover:bg-zan-blue/10"
-                  : "bg-white border-gray-200 hover:border-zan-cyan hover:bg-gray-50"
+                isActive
+                  ? "border-zan-cyan bg-zan-blue/15 shadow-[0_0_0_1px_rgba(34,211,238,0.35)]"
+                  : theme === "dark"
+                    ? "bg-gray-800 border-gray-700 hover:border-zan-cyan hover:bg-zan-blue/10"
+                    : "bg-white border-gray-200 hover:border-zan-cyan hover:bg-gray-50"
               )}
             >
               <div
@@ -169,78 +213,9 @@ export const SubtitleEditor = ({ onClose }: SubtitleEditorProps) => {
                 onChange={(e) => updateCue(originalTrack.id, originalCue.id, e.target.value)}
                 className={textareaCls()}
               />
-
-              {translatedTrack && translatedCue && (
-                <div className="mt-1.5">
-                  <textarea
-                    value={translatedCue.text}
-                    onInput={autoResize}
-                    rows={2}
-                    onChange={(e) => updateCue(translatedTrack.id, translatedCue.id, e.target.value)}
-                    className={cn(
-                      textareaCls(),
-                      "border-l-2",
-                      theme === "dark" ? "border-l-purple-500/60" : "border-l-purple-400"
-                    )}
-                  />
-                </div>
-              )}
             </div>
           );
         })}
-
-        {!originalTrack &&
-          translatedTrack?.cues.map((cue) => (
-            <div
-              key={cue.id}
-              onClick={() => setSeekTo(cue.startTime)}
-              className={cn(
-                "rounded-lg border p-2 transition-all cursor-pointer",
-                theme === "dark"
-                  ? "bg-gray-800 border-gray-700 hover:border-zan-cyan hover:bg-zan-blue/10"
-                  : "bg-white border-gray-200 hover:border-zan-cyan hover:bg-gray-50"
-              )}
-            >
-              <div
-                className="flex items-center justify-between mb-1.5"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <span
-                  className={cn(
-                    "text-[10px] font-mono",
-                    theme === "dark" ? "text-gray-500" : "text-gray-400"
-                  )}
-                >
-                  {formatEditorTime(cue.startTime)}
-                </span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteCue(translatedTrack.id, cue.id);
-                  }}
-                  className={cn(
-                    "p-1 rounded transition-all",
-                    theme === "dark"
-                      ? "text-gray-500 hover:bg-red-500/20 hover:text-red-400"
-                      : "text-gray-400 hover:bg-red-50 hover:text-red-500"
-                  )}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              <textarea
-                value={cue.text}
-                onInput={autoResize}
-                rows={2}
-                onChange={(e) => updateCue(translatedTrack.id, cue.id, e.target.value)}
-                className={cn(
-                  textareaCls(),
-                  "border-l-2",
-                  theme === "dark" ? "border-l-purple-500/60" : "border-l-purple-400"
-                )}
-              />
-            </div>
-          ))}
 
         {originalTrack && (
           <button

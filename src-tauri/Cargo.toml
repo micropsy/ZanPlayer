@@ -1,10 +1,10 @@
 [package]
-name = "zanplayer"
-version = "0.3.9"
+name = "zanplayer-lite"
+version = "0.0.1"
 description = "A modern, AI-powered subtitle player"
 authors = ["you"]
 license = "MIT"
-repository = "https://github.com/micropsy/ZanPlayer.git"
+repository = "https://github.com/micropsy/ZanPlayer-Lite.git"
 edition = "2021"
 
 [build-dependencies]
@@ -21,13 +21,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["stream"] }
 futures-util = "0.3"
-whisper-rs = { version = "0.12", optional = true }
+whisper-rs = "0.16"
+silero-vad-pure = "0.1.1"
+crossbeam-channel = "0.5"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 directories-next = "2.0"
 regex = "1.10"
 hound = "3.5"
 
 [features]
-default = ["custom-protocol", "whisper"]
+default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
-whisper = ["whisper-rs"]

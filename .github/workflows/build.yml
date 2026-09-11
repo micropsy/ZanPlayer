@@ -85,9 +85,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Bundle ONNX WASM assets
-        run: npm run bundle:wasm
-
       - name: Build app and publish release on tags
         uses: tauri-apps/tauri-action@v0
         env:

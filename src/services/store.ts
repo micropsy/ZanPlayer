@@ -1,11 +1,19 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { SubtitleTrack, SubtitleCue } from "../types/subtitle";
-import { TauriService } from "./tauri";
+import { TauriService, type ProjectData } from "./tauri";
 
-export type SubtitleDisplayMode = "original" | "translated" | "dual";
 export type ProgressStep = "idle" | "saving" | "extracting" | "transcribing";
 export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "uptodate";
+
+/// Subtitle output the user selected. Whisper emits either source-language text
+/// or an English translation, never both in one pass, so "both" runs two passes
+/// over the same audio and the UI merges cues by kind.
+export type SubtitleOutputMode = "original" | "english" | "both";
+
+/// Generation strategy: real-time streaming (cues land as chunks decode) or
+/// full batch (the whole track is processed before playback starts).
+export type TranscriptionMode = "stream" | "batch";
 
 export interface SubtitleStyle {
     fontName: string;
@@ -17,28 +25,6 @@ export interface SubtitleStyle {
     italic: boolean;
     alignment: "bottom" | "top";
 }
-
-// Title/language options shown in the CC menu and the Settings caption-language
-// picker. "auto" is the untranslated Original track; every other entry is a
-// target language for the offline NLLB translation model (whose input is the
-// English transcript produced by Whisper).
-export const SUBTITLE_LANGUAGES = [
-    { code: "auto", name: "Original" },
-    { code: "en", name: "English" },
-    { code: "es", name: "Spanish" },
-    { code: "my", name: "Burmese" },
-    { code: "fr", name: "French" },
-    { code: "de", name: "German" },
-    { code: "ja", name: "Japanese" },
-    { code: "ko", name: "Korean" },
-    { code: "zh", name: "Chinese (Simplified)" },
-    { code: "pt", name: "Portuguese" },
-    { code: "ru", name: "Russian" },
-    { code: "th", name: "Thai" },
-    { code: "vi", name: "Vietnamese" },
-    { code: "hi", name: "Hindi" },
-    { code: "ar", name: "Arabic" },
-] as const;
 
 // Full display names -> whisper ISO-639-1 codes. whisper.cpp's `g_lang` table only
 // resolves ISO codes ("en", "my") or its own full names ("english", "myanmar");
@@ -97,6 +83,40 @@ export function whisperLangCode(lang: string | undefined | null): string | undef
     return /^[a-z]{2}$/.test(key) ? key : undefined;
 }
 
+/// Reverse lookup of a whisper ISO code / display name for subtitle labels.
+export function languageLabel(lang: string | undefined | null): string {
+    if (!lang) return "Auto-Detect";
+    const lower = lang.trim().toLowerCase();
+    if (isCodeToName(lower)) return isCodeToName(lower)!;
+    const key = Object.keys(WHISPER_LANG_MAP).find(
+        (k) => WHISPER_LANG_MAP[k] === lower && !k.includes("-")
+    );
+    if (key) return key.charAt(0).toUpperCase() + key.slice(1);
+    return lower;
+}
+
+const CODE_TO_NAME: Record<string, string> = {
+    auto: "Auto-Detect",
+    en: "English",
+    my: "Burmese",
+    es: "Spanish",
+    fr: "French",
+    de: "German",
+    ja: "Japanese",
+    ko: "Korean",
+    zh: "Chinese",
+    pt: "Portuguese",
+    ru: "Russian",
+    th: "Thai",
+    vi: "Vietnamese",
+    hi: "Hindi",
+    ar: "Arabic",
+};
+
+function isCodeToName(code: string): string | undefined {
+    return CODE_TO_NAME[code];
+}
+
 interface AppState {
     currentVideo: File | null;
     setCurrentVideo: (video: File | null) => void;
@@ -109,16 +129,11 @@ interface AppState {
     resetSubtitles: () => void;
     appendStreamedCues: (trackId: string, meta: { name: string; language: string }, cues: SubtitleCue[]) => void;
     setTrackCues: (trackId: string, cues: SubtitleCue[]) => void;
+    removeGeneratedTracks: () => void;
+    applyBatchTracks: (tracks: Array<{ id: string; name: string; language: string; cues: SubtitleCue[] }>) => void;
+    loadProject: (project: ProjectData) => void;
     activeSubtitleTrackId: string | null;
     setActiveSubtitleTrackId: (id: string | null) => void;
-    activeTranslatedTrackId: string | null;
-    setActiveTranslatedTrackId: (id: string | null) => void;
-    subtitleDisplayMode: SubtitleDisplayMode;
-    setSubtitleDisplayMode: (mode: SubtitleDisplayMode) => void;
-    translatedCues: Record<string, string>;
-    appendTranslatedCue: (cue: { id: string; text: string }) => void;
-    mergeTranslatedCues: (map: Record<string, string>) => void;
-    clearTranslatedCues: () => void;
     showSubtitles: boolean;
     setShowSubtitles: (show: boolean) => void;
     currentTime: number;
@@ -147,28 +162,18 @@ interface AppState {
     setUseLocalWhisper: (use: boolean) => void;
     whisperModel: string;
     setWhisperModel: (model: string) => void;
-    targetLanguage: string;
-    setTargetLanguage: (lang: string) => void;
     sourceLanguage: string;
     setSourceLanguage: (lang: string) => void;
+    subtitleMode: SubtitleOutputMode;
+    setSubtitleMode: (mode: SubtitleOutputMode) => void;
+    transcriptionMode: TranscriptionMode;
+    setTranscriptionMode: (mode: TranscriptionMode) => void;
     autoCheckUpdates: boolean;
     setAutoCheckUpdates: (check: boolean) => void;
     isTranscribing: boolean;
     setIsTranscribing: (val: boolean) => void;
     transcriptionProgress: number;
     setTranscriptionProgress: (progress: number) => void;
-    transcriptionMode: "realtime" | "full";
-    setTranscriptionMode: (mode: "realtime" | "full") => void;
-
-    // Offline translation
-    translationModelAvailable: boolean;
-    setTranslationModelAvailable: (available: boolean) => void;
-    translationModelLoading: boolean;
-    setTranslationModelLoading: (loading: boolean) => void;
-    translationLoadProgress: number;
-    setTranslationLoadProgress: (progress: number) => void;
-    translationError: string | null;
-    setTranslationError: (error: string | null) => void;
 
     // Model management
     downloadedModels: string[];
@@ -215,8 +220,6 @@ export const useAppStore = create<AppState>()(
                 set({
                     subtitleTracks: [],
                     activeSubtitleTrackId: null,
-                    activeTranslatedTrackId: null,
-                    translatedCues: {},
                     isTranscribing: false,
                     transcriptionProgress: 0,
                 }),
@@ -226,7 +229,7 @@ export const useAppStore = create<AppState>()(
                     const tracks = exists
                         ? state.subtitleTracks
                         : [
-                              ...state.subtitleTracks.filter((t) => !t.isGenerated),
+                              ...state.subtitleTracks,
                               {
                                   id: trackId,
                                   name: meta.name,
@@ -248,52 +251,66 @@ export const useAppStore = create<AppState>()(
                         t.id === trackId ? { ...t, cues } : t
                     ),
                 })),
-            activeSubtitleTrackId: null,
-            setActiveSubtitleTrackId: (id: string | null) => set({ activeSubtitleTrackId: id }),
-            activeTranslatedTrackId: null,
-            setActiveTranslatedTrackId: (id: string | null) => set({ activeTranslatedTrackId: id }),
-            subtitleDisplayMode: "dual",
-            setSubtitleDisplayMode: (mode: SubtitleDisplayMode) => set({ subtitleDisplayMode: mode }),
-            translatedCues: {},
-            appendTranslatedCue: (cue: { id: string; text: string }) =>
-                set((state: AppState) => {
-                    // Keep the translated track (if one is active) in sync so the
-                    // sidebar/editor/export still see a concrete translated track,
-                    // while the overlay reads the raw map for live chunk updates.
-                    const original = state.subtitleTracks.find(
-                        (t) => t.id === state.activeSubtitleTrackId
-                    );
-                    const source = original?.cues.find((c) => c.id === cue.id);
-                    const subtitleTracks =
-                        source && state.activeTranslatedTrackId
-                            ? state.subtitleTracks.map((track: SubtitleTrack) => {
-                                  if (track.id !== state.activeTranslatedTrackId) return track;
-                                  const exists = track.cues.some((c) => c.id === cue.id);
-                                  return exists
-                                      ? {
-                                            ...track,
-                                            cues: track.cues.map((c) =>
-                                                c.id === cue.id ? { ...c, text: cue.text } : c
-                                            ),
-                                        }
-                                      : { ...track, cues: [...track.cues, { ...source, text: cue.text }] };
-                              })
-                            : state.subtitleTracks;
+            // Drop generated tracks created by a previous job (e.g. before
+            // regenerating after the user changes the output/generation mode),
+            // keeping manually-loaded subtitle files intact.
+            removeGeneratedTracks: () =>
+                set((state) => {
+                    const remaining = state.subtitleTracks.filter((t) => !t.isGenerated);
                     return {
-                        subtitleTracks,
-                        translatedCues: { ...state.translatedCues, [cue.id]: cue.text },
+                        subtitleTracks: remaining,
+                        activeSubtitleTrackId: state.activeSubtitleTrackId && remaining.some((t) => t.id === state.activeSubtitleTrackId) ? state.activeSubtitleTrackId : null,
                     };
                 }),
-            clearTranslatedCues: () =>
-                set((state: AppState) => ({
-                    translatedCues: {},
-                    subtitleTracks: state.subtitleTracks.filter((t) => !t.isTranslated),
-                    activeTranslatedTrackId: null,
-                })),
-            mergeTranslatedCues: (map: Record<string, string>) =>
-                set((state: AppState) => ({
-                    translatedCues: { ...state.translatedCues, ...map },
-                })),
+            // Replace generated tracks in one shot with the complete timelines
+            // delivered by a full (batch) job.
+            applyBatchTracks: (tracks) =>
+                set((state) => {
+                    const manual = state.subtitleTracks.filter((t) => !t.isGenerated);
+                    return {
+                        subtitleTracks: [...manual, ...tracks.map((t) => ({ ...t, isGenerated: true }))],
+                        activeSubtitleTrackId: tracks[0]?.id ?? null,
+                    };
+                }),
+            // Restore a saved `.zan` project. All fields are set in a single
+            // write so the VideoPlayer effects observe a fully-populated state:
+            // when `currentVideoPath` flips and the auto-transcribe effect
+            // re-evaluates, `subtitleTracks.length > 0` guarantees the loaded
+            // captions are used as-is — Whisper inference is never re-run. The
+            // transient `File` object is dropped (only the path survives across
+            // sessions); the player regenerates the blob URL from the path.
+            loadProject: (project) =>
+                set({
+                    currentVideoPath: project.videoPath,
+                    currentVideo: null,
+                    currentVideoUrl: null,
+                    subtitleTracks: project.subtitleTracks.map((t) => ({
+                        id: t.id,
+                        name: t.name,
+                        language: t.language,
+                        isGenerated: t.isGenerated,
+                        cues: t.cues.map((c) => ({
+                            id: c.id,
+                            startTime: c.startTime,
+                            endTime: c.endTime,
+                            text: c.text,
+                            kind: c.kind,
+                        })),
+                    })),
+                    activeSubtitleTrackId: project.activeSubtitleTrackId,
+                    showSubtitles: project.showSubtitles,
+                    subtitleMode: project.subtitleMode,
+                    transcriptionMode: project.transcriptionMode,
+                    sourceLanguage: project.sourceLanguage,
+                    subtitleStyle: project.subtitleStyle,
+                    currentTime: project.currentTime,
+                    isPlaying: false,
+                    isTranscribing: false,
+                    transcriptionProgress: 0,
+                    seekTo: null,
+                }),
+            activeSubtitleTrackId: null,
+            setActiveSubtitleTrackId: (id: string | null) => set({ activeSubtitleTrackId: id }),
             showSubtitles: true,
             setShowSubtitles: (show: boolean) => set({ showSubtitles: show }),
             currentTime: 0,
@@ -375,29 +392,18 @@ export const useAppStore = create<AppState>()(
             setUseLocalWhisper: (use: boolean) => set({ useLocalWhisper: use }),
             whisperModel: "tiny",
             setWhisperModel: (model: string) => set({ whisperModel: model }),
-            targetLanguage: "en",
-            setTargetLanguage: (lang: string) => set({ targetLanguage: lang }),
             sourceLanguage: "auto",
             setSourceLanguage: (lang: string) => set({ sourceLanguage: lang }),
+            subtitleMode: "english",
+            setSubtitleMode: (mode: SubtitleOutputMode) => set({ subtitleMode: mode }),
+            transcriptionMode: "stream",
+            setTranscriptionMode: (mode: TranscriptionMode) => set({ transcriptionMode: mode }),
             autoCheckUpdates: true,
             setAutoCheckUpdates: (check: boolean) => set({ autoCheckUpdates: check }),
             isTranscribing: false,
             setIsTranscribing: (val: boolean) => set({ isTranscribing: val }),
             transcriptionProgress: 0,
             setTranscriptionProgress: (progress: number) => set({ transcriptionProgress: progress }),
-            transcriptionMode: "realtime" as const,
-            setTranscriptionMode: (mode: "realtime" | "full") => set({ transcriptionMode: mode }),
-
-            // Offline translation
-            translationModelAvailable: false,
-            setTranslationModelAvailable: (available: boolean) => set({ translationModelAvailable: available }),
-            translationModelLoading: false,
-            setTranslationModelLoading: (loading: boolean) => set({ translationModelLoading: loading }),
-            translationLoadProgress: 0,
-            setTranslationLoadProgress: (progress: number) =>
-                set({ translationLoadProgress: Math.min(100, Math.max(0, Math.round(progress))) }),
-            translationError: null,
-            setTranslationError: (error: string | null) => set({ translationError: error }),
 
             // Model management
             downloadedModels: [],
@@ -511,16 +517,15 @@ export const useAppStore = create<AppState>()(
             setUpdateVersion: (version: string | null) => set({ updateVersion: version }),
         }),
         {
-            name: "zanplayer-storage",
+            name: "zanplayer-lite-storage",
             partialize: (state: AppState) => ({
                 theme: state.theme,
                 useLocalWhisper: state.useLocalWhisper,
                 whisperModel: state.whisperModel,
                 subtitleStyle: state.subtitleStyle,
-                targetLanguage: state.targetLanguage,
                 sourceLanguage: state.sourceLanguage,
+                subtitleMode: state.subtitleMode,
                 transcriptionMode: state.transcriptionMode,
-                subtitleDisplayMode: state.subtitleDisplayMode,
                 autoCheckUpdates: state.autoCheckUpdates,
             }),
         }

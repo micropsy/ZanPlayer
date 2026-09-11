@@ -47,7 +47,7 @@ export const UpdateModal = () => {
             </div>
             <h3 className="text-xl font-semibold text-white tracking-wide">Checking for updates...</h3>
             <p className="text-sm text-gray-400 mt-2 leading-relaxed">
-              We're looking for the latest version of ZanPlayer.
+              We're looking for the latest version of ZanPlayer Lite.
             </p>
           </div>
         )}
@@ -62,7 +62,7 @@ export const UpdateModal = () => {
               v{updateVersion}
             </span>
             <p className="text-sm text-gray-400 mt-2 leading-relaxed max-w-[300px]">
-              A new version of ZanPlayer is ready to download. Get the latest features and
+              A new version of ZanPlayer Lite is ready to download. Get the latest features and
               improvements now.
             </p>
             <div className="flex gap-2 w-full mt-6">
@@ -118,7 +118,7 @@ export const UpdateModal = () => {
               v{updateVersion}
             </span>
             <p className="text-sm text-gray-400 mt-2 leading-relaxed max-w-[300px]">
-              Your update is ready to install. Restart ZanPlayer to apply the latest changes.
+              Your update is ready to install. Restart ZanPlayer Lite to apply the latest changes.
             </p>
             <div className="flex flex-col gap-2 w-full mt-6">
               <button
@@ -145,7 +145,7 @@ export const UpdateModal = () => {
             </div>
             <h3 className="text-xl font-semibold text-white tracking-wide">You're up to date!</h3>
             <p className="text-sm text-gray-400 mt-2 leading-relaxed max-w-[300px]">
-              ZanPlayer is running the latest version. Nothing to install.
+              ZanPlayer Lite is running the latest version. Nothing to install.
             </p>
             <button
               onClick={cancelUpdate}

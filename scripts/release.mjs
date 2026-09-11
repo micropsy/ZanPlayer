@@ -1,4 +1,4 @@
-// ZanPlayer release automation (SemVer pipeline)
+// ZanPlayer Lite release automation (SemVer pipeline)
 //
 // Usage (from project root):
 //   npm run release -- patch          # 0.1.1 -> 0.1.2  (bug fixes)
@@ -51,11 +51,11 @@ const setCargoToml = (text, version) =>
 
 // Cargo.lock: only the [[package]] block whose name is the app crate
 const readCargoLock = (text) =>
-  text.match(/\[\[package\]\]\nname = "zanplayer"\nversion\s*=\s*"([^"]+)"/)?.[1] ?? null;
+  text.match(/\[\[package\]\]\nname = "zanplayer-lite"\nversion\s*=\s*"([^"]+)"/)?.[1] ?? null;
 
 const setCargoLock = (text, version) =>
   text.replace(
-    /(\[\[package\]\]\nname = "zanplayer"\nversion\s*=\s*)"[^"]+"/,
+    /(\[\[package\]\]\nname = "zanplayer-lite"\nversion\s*=\s*)"[^"]+"/,
     `$1"${version}"`
   );
 
@@ -69,7 +69,7 @@ const setPackageLock = (text, version) => {
   const obj = JSON.parse(text);
   obj.version = version;
   if (obj.packages?.[""]) obj.packages[""].version = version;
-  if (obj.packages?.["node_modules/zanplayer"]) obj.packages["node_modules/zanplayer"].version = version;
+  if (obj.packages?.["node_modules/zanplayer-lite"]) obj.packages["node_modules/zanplayer-lite"].version = version;
   return `${JSON.stringify(obj, null, 2)}\n`;
 };
 

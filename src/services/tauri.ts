@@ -1,12 +1,77 @@
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { homeDir } from "@tauri-apps/api/path";
-import { readFile } from "@tauri-apps/plugin-fs";
 import type { SubtitleCue } from "../types/subtitle";
+
+type BackendCue = {
+  id: string;
+  start_time: number;
+  end_time: number;
+  text: string;
+  kind?: string;
+};
+
+export interface BatchDoneTrack {
+  kind: string;
+  language: string;
+  cues: Array<{
+    id: string;
+    startTime: number;
+    endTime: number;
+    text: string;
+    kind?: string;
+  }>;
+}
 
 interface VideoFile {
   path: string;
   name: string;
+}
+
+export interface TranscriptionBatchDonePayload {
+  tracks: BatchDoneTrack[];
+}
+
+export interface InterfaceVideoFile {
+  path: string;
+  name: string;
+}
+
+// Mirrors the Rust `ProjectData` struct (see src-tauri/src/main.rs). The
+// `.zan` project file is plain JSON keyed in camelCase, so this interface maps
+// 1:1 onto both the on-disk schema and the store's hydration action.
+export interface ProjectData {
+  version: number;
+  videoPath: string;
+  subtitleTracks: Array<{
+    id: string;
+    name: string;
+    language: string;
+    isGenerated?: boolean;
+    cues: Array<{
+      id: string;
+      startTime: number;
+      endTime: number;
+      text: string;
+      kind?: string;
+    }>;
+  }>;
+  activeSubtitleTrackId: string | null;
+  showSubtitles: boolean;
+  subtitleMode: "original" | "english" | "both";
+  transcriptionMode: "stream" | "batch";
+  sourceLanguage: string;
+  subtitleStyle: {
+    fontName: string;
+    fontSize: number;
+    primaryColor: string;
+    outlineColor: string;
+    backColor: string;
+    bold: boolean;
+    italic: boolean;
+    alignment: "bottom" | "top";
+  };
+  currentTime: number;
 }
 
 // Check if we're running in a Tauri environment
@@ -74,6 +139,40 @@ export class TauriService {
     });
   }
 
+  static async openProjectDialog(): Promise<string | null> {
+    if (!isTauri()) {
+      throw new Error("This feature requires the Tauri app");
+    }
+    return await invoke<string | null>("open_project_dialog");
+  }
+
+  static async saveProjectDialog(): Promise<string | null> {
+    if (!isTauri()) {
+      throw new Error("This feature requires the Tauri app");
+    }
+    return await invoke<string | null>("save_project_dialog");
+  }
+
+  static async writeProjectFile(filePath: string, data: ProjectData): Promise<void> {
+    if (!isTauri()) {
+      throw new Error("This feature requires the Tauri app");
+    }
+    await invoke<void>("write_project_file", { filePath, data });
+  }
+
+  static async readProjectFile(
+    filePath: string
+  ): Promise<{ project: ProjectData; mediaExists: boolean }> {
+    if (!isTauri()) {
+      throw new Error("This feature requires the Tauri app");
+    }
+    const [project, mediaExists] = await invoke<[ProjectData, boolean]>(
+      "read_project_file",
+      { filePath }
+    );
+    return { project, mediaExists };
+  }
+
   static async writeFile(
     fileName: string,
     fileData: Uint8Array
@@ -100,61 +199,42 @@ export class TauriService {
     });
   }
 
-  static async readFileAsBlob(filePath: string): Promise<Blob> {
-    if (!isTauri()) {
-      throw new Error("This feature requires the Tauri app");
-    }
-    const binaryData = await readFile(filePath);
-    return new Blob([binaryData], { type: "audio/wav" });
-  }
-
-  static async transcribeAudioLocal(
-    audioPath: string,
+  // Native dual-pass transcription: Silero VAD -> Whisper decode. The pass
+  // (`params.translate`) is driven by `subtitleMode` — "original" runs
+  // translate=false, "english" runs translate=true, "both" runs two passes
+  // over the same audio (parallel in realtime mode, sequential in batch mode).
+  // Cues are tagged with a `kind` ("original" | "translation") so the UI can
+  // merge them into per-language tracks from the render queue.
+  static async startTranscription(
+    mediaPath: string,
     modelName: string,
-    language?: string,
-    targetLanguage?: string
-  ): Promise<SubtitleCue[]> {
+    language: string | undefined,
+    subtitleMode: "original" | "english" | "both",
+    transcriptionMode: "stream" | "batch"
+  ): Promise<void> {
     if (!isTauri()) {
       throw new Error("This feature requires the Tauri app");
     }
-    const cues = await invoke<
-      Array<{ id: string; start_time: number; end_time: number; text: string }>
-    >("transcribe_audio_local", {
-      audioPath,
+    await invoke<void>("start_transcription", {
+      mediaPath,
       modelName,
       language,
-      targetLanguage,
+      subtitleMode,
+      transcriptionMode,
     });
+  }
+
+  static async pollTranscriptCues(): Promise<SubtitleCue[]> {
+    if (!isTauri()) {
+      return [];
+    }
+    const cues = await invoke<BackendCue[]>("poll_transcript_cues");
     return cues.map((c) => ({
       id: c.id,
       startTime: c.start_time,
       endTime: c.end_time,
       text: c.text,
-    }));
-  }
-
-  static async processDroppedVideo(
-    videoPath: string,
-    modelName: string,
-    language?: string,
-    targetLanguage?: string
-  ): Promise<SubtitleCue[]> {
-    if (!isTauri()) {
-      throw new Error("This feature requires the Tauri app");
-    }
-    const cues = await invoke<
-      Array<{ id: string; start_time: number; end_time: number; text: string }>
-    >("process_dropped_video", {
-      videoPath,
-      modelName,
-      language,
-      targetLanguage,
-    });
-    return cues.map((c) => ({
-      id: c.id,
-      startTime: c.start_time,
-      endTime: c.end_time,
-      text: c.text,
+      kind: c.kind,
     }));
   }
 

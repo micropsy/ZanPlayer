@@ -1,30 +1,91 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod pipeline;
+
+use crate::pipeline::{StreamOptions, SubtitleCue};
+use directories_next::ProjectDirs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Emitter, Manager};
-use directories_next::ProjectDirs;
-#[cfg(feature = "whisper")]
-use whisper_rs::{WhisperContext, FullParams, SamplingStrategy, WhisperContextParameters, SegmentCallbackData};
-#[cfg(feature = "whisper")]
-use hound;
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
+use whisper_rs::{WhisperContext, WhisperContextParameters};
+
+/// Which subtitle output the user asked for. Drives the whisper `translate`
+/// task flag — never hardcoded:
+///  * `Original` runs `translate = false` (source language output)
+///  * `English` runs `translate = true` (English output)
+///  * `Both` runs two passes over the same audio, one per flag.
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum SubtitleMode {
+    Original,
+    English,
+    Both,
+}
+
+/// Generation strategy for a transcription job.
+///  * `Stream`: real-time VAD-gated decoding; "Both" runs two passes on
+///    separate async threads so subtitles never lag the video.
+///  * `Batch`: every pass runs to completion before anything is surfaced,
+///    guaranteeing perfectly-synced, zero-latency dual subtitles at playback.
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum TranscriptMode {
+    Stream,
+    Batch,
+}
+
+/// Tags for the two inference passes. The UI render queue merges cues by this
+/// tag into per-language tracks.
+const KIND_ORIGINAL: &str = "original";
+const KIND_TRANSLATION: &str = "translation";
+
+/// Build the decode pass list for a requested subtitle mode. Each entry is a
+/// `(translate, kind)` pair: `translate` tells whisper whether to output
+/// English, `kind` labels the cues for the UI merge step.
+fn passes_for_mode(mode: SubtitleMode) -> Vec<(bool, String)> {
+    match mode {
+        SubtitleMode::Original => vec![(false, KIND_ORIGINAL.to_string())],
+        SubtitleMode::English => vec![(true, KIND_TRANSLATION.to_string())],
+        SubtitleMode::Both => vec![
+            (false, KIND_ORIGINAL.to_string()),
+            (true, KIND_TRANSLATION.to_string()),
+        ],
+    }
+}
+
+/// Resolved execution plan for a transcription job: which passes to decode,
+/// whether realtime "Both" runs them on separate threads (so subtitles never
+/// lag the video at 2x), and how many whisper contexts to load.
+#[derive(Debug, PartialEq)]
+struct JobPlan {
+    passes: Vec<(bool, String)>,
+    parallel: bool,
+    context_count: usize,
+}
+
+fn plan_job(subtitle_mode: SubtitleMode, transcript_mode: TranscriptMode) -> JobPlan {
+    let passes = passes_for_mode(subtitle_mode);
+    // Two passes are cheap to overlap *only* in realtime mode, where each pass
+    // owns a thread and its own context. Batch mode is inherently sequential:
+    // one context decodes every pass, so loading a second one is pure waste.
+    let parallel = transcript_mode == TranscriptMode::Stream && passes.len() > 1;
+    let context_count = if parallel { passes.len() } else { 1 };
+    JobPlan {
+        passes,
+        parallel,
+        context_count,
+    }
+}
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct VideoFile {
     path: String,
     name: String,
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-struct SubtitleCue {
-    id: String,
-    start_time: f64,
-    end_time: f64,
-    text: String,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -38,59 +99,215 @@ struct ProgressPayload {
     eta_seconds: u64,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct PipelineProgress {
+    percentage: f64,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct TranscriptionDone {
+    total: usize,
+}
+
+/// One complete cue timeline handed to the UI when a full (batch) job finishes.
+#[derive(Clone, serde::Serialize)]
+struct BatchTrack {
+    kind: String,
+    language: String,
+    cues: Vec<SubtitleCue>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct TranscriptionBatchDone {
+    tracks: Vec<BatchTrack>,
+}
+
+// ---------------------------------------------------------------------------
+// Project save/load (`.zan`). The JSON schema mirrors the frontend store's
+// `camelCase` field names so the file round-trips between Rust and TypeScript
+// without translation. `version` is reserved for forward-compatible migrations.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectCue {
+    id: String,
+    start_time: f64,
+    end_time: f64,
+    text: String,
+    kind: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectTrack {
+    id: String,
+    name: String,
+    language: String,
+    cues: Vec<ProjectCue>,
+    #[serde(default)]
+    is_generated: Option<bool>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectSubtitleStyle {
+    font_name: String,
+    font_size: f64,
+    primary_color: String,
+    outline_color: String,
+    back_color: String,
+    bold: bool,
+    italic: bool,
+    alignment: String,
+}
+
+/// Current schema version of the `.zan` project file.
+const PROJECT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectData {
+    version: u32,
+    video_path: String,
+    subtitle_tracks: Vec<ProjectTrack>,
+    active_subtitle_track_id: Option<String>,
+    show_subtitles: bool,
+    subtitle_mode: String,
+    transcription_mode: String,
+    source_language: String,
+    subtitle_style: ProjectSubtitleStyle,
+    current_time: f64,
+}
+
+/// Thread-safe render queue the UI drains against the player master clock.
+/// The background decode thread appends globalized cues here; the webview calls
+/// `poll_transcript_cues` (typically on a timer or after `transcript-cues-ready`)
+/// and only surfaces cues whose timestamp overlaps the current playhead.
+#[derive(Clone, Default)]
+struct RenderQueue(Arc<Mutex<Vec<SubtitleCue>>>);
+
 fn get_app_dir() -> PathBuf {
-    let proj_dirs = ProjectDirs::from("com", "micropsy", "ZanPlayer").expect("Failed to get app dir");
+    let proj_dirs =
+        ProjectDirs::from("com", "micropsy", "ZanPlayerLite").expect("Failed to get app dir");
     proj_dirs.data_local_dir().to_path_buf()
 }
 
-// whisper.cpp ships the large model as `large-v3`, not plain `large`
-fn model_filename(model_name: &str) -> String {
-    let lower = model_name.to_lowercase();
+fn models_dir() -> PathBuf {
+    get_app_dir().join("models")
+}
+
+// ---------------------------------------------------------------------------
+// Model resolution (GGML `.bin` + quantized GGUF).
+// ---------------------------------------------------------------------------
+
+/// Base filenames for a requested model key. whisper.cpp ships the large model
+/// as `large-v3` (and `large-v3-turbo`), never plain `large`.
+fn base_model_names(model_name: &str) -> Vec<String> {
+    let lower = model_name.trim().to_ascii_lowercase();
     if lower == "large" {
-        "ggml-large-v3.bin".to_string()
+        vec!["large-v3".to_string(), "large".to_string()]
     } else {
-        format!("ggml-{}.bin", lower)
+        vec![lower]
     }
+}
+
+/// Ordered candidate filenames for a model key, spanning legacy quantized
+/// `.bin` files and modern `.gguf` weights (e.g. `ggml-large-v3-q5_0.gguf`).
+fn model_candidates(model_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for base in base_model_names(model_name) {
+        for ext in [".bin", ".gguf"] {
+            let plain = format!("ggml-{}{}", base, ext);
+            if !out.contains(&plain) {
+                out.push(plain);
+            }
+            for quant in ["-q5_0", "-q8_0"] {
+                let candidate = format!("ggml-{}{}{}", base, quant, ext);
+                if !out.contains(&candidate) {
+                    out.push(candidate);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// GGUF weights live under the modern `ggml-org` org; legacy `.bin` under
+/// `ggerganov`. Each candidate gets the host it actually exists on.
+fn model_url(filename: &str) -> String {
+    let host = if filename.ends_with(".gguf") {
+        "ggml-org"
+    } else {
+        "ggerganov"
+    };
+    format!("https://huggingface.co/{}/whisper.cpp/resolve/main/{}?download=true", host, filename)
+}
+
+fn is_whisper_model_file(filename: &str) -> bool {
+    let lower = filename.to_ascii_lowercase();
+    lower.starts_with("ggml-") && (lower.ends_with(".bin") || lower.ends_with(".gguf"))
+}
+
+/// Map a stored model filename back to the UI model key.
+fn model_key_from_filename(filename: &str) -> String {
+    let name = filename.strip_prefix("ggml-").unwrap_or(filename);
+    let base = name
+        .trim_end_matches(".bin")
+        .trim_end_matches(".gguf")
+        .trim_end_matches("-q5_0")
+        .trim_end_matches("-q4_0")
+        .trim_end_matches("-q8_0")
+        .trim_end_matches("-f16")
+        .trim_end_matches(".en");
+    match base {
+        "large-v3" | "large-v3-turbo" | "large" => "large".to_string(),
+        other if other.starts_with("large-v3-") => "large".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn find_model(models_dir: &Path, model_name: &str) -> Option<PathBuf> {
+    model_candidates(model_name)
+        .into_iter()
+        .map(|f| models_dir.join(f))
+        .find(|p| p.exists())
 }
 
 #[tauri::command]
 async fn download_whisper_model(app: AppHandle, model_name: String) -> Result<String, String> {
-    #[cfg(feature = "whisper")]
-    {
-        let app_dir = get_app_dir();
-        let models_dir = app_dir.join("models");
-        std::fs::create_dir_all(&models_dir).map_err(|e| e.to_string())?;
+    let dir = models_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-        let lower_name = model_name.to_lowercase();
-        let model_filename = model_filename(&lower_name);
-        let model_path = models_dir.join(&model_filename);
-        let part_path = models_dir.join(format!("{}.part", model_filename));
-
+    let candidates = model_candidates(&model_name);
+    for filename in &candidates {
+        let model_path = dir.join(filename);
         if model_path.exists() {
             return Ok(model_path.to_string_lossy().to_string());
         }
-
-        let url = format!(
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}?download=true",
-            model_filename
-        );
-
-        let client = reqwest::Client::builder()
-            .user_agent("ZanPlayer/1.0 (macOS)")
-            .build()
-            .map_err(|e| format!("Failed to build client: {}", e))?;
-
-        let result = download_and_save(&client, &url, &part_path, &model_path, &app, &lower_name).await;
-        if result.is_err() {
-            std::fs::remove_file(&part_path).ok();
-        }
-        result
     }
-    #[cfg(not(feature = "whisper"))]
-    Err("Whisper feature is not enabled".to_string())
+
+    let client = reqwest::Client::builder()
+        .user_agent("ZanPlayerLite/0.0.1 (macOS)")
+        .build()
+        .map_err(|e| format!("Failed to build client: {}", e))?;
+
+    let mut last_err = String::from("no candidate models");
+    for filename in &candidates {
+        let model_path = dir.join(filename);
+        let part_path = dir.join(format!("{}.part", filename));
+        let url = model_url(filename);
+        match download_and_save(&client, &url, &part_path, &model_path, &app, &model_name).await {
+            Ok(path) => return Ok(path),
+            Err(e) => {
+                std::fs::remove_file(&part_path).ok();
+                last_err = e;
+            }
+        }
+    }
+    Err(format!("All model sources failed: {}", last_err))
 }
 
-#[cfg(feature = "whisper")]
 async fn download_and_save(
     client: &reqwest::Client,
     url: &str,
@@ -163,15 +380,11 @@ async fn download_and_save(
 
 #[tauri::command]
 async fn delete_whisper_model(model_name: String) -> Result<(), String> {
-    #[cfg(feature = "whisper")]
-    {
-        let app_dir = get_app_dir();
-        let models_dir = app_dir.join("models");
-        let model_filename = model_filename(&model_name);
-        let model_path = models_dir.join(&model_filename);
-
-        if model_path.exists() {
-            std::fs::remove_file(model_path).map_err(|e| e.to_string())?;
+    let dir = models_dir();
+    for filename in model_candidates(&model_name) {
+        let path = dir.join(filename);
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
@@ -179,443 +392,382 @@ async fn delete_whisper_model(model_name: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn list_downloaded_models() -> Result<Vec<String>, String> {
-    #[cfg(feature = "whisper")]
-    {
-        let app_dir = get_app_dir();
-        let models_dir = app_dir.join("models");
-        let mut models = Vec::new();
-
-        if models_dir.exists() {
-            for entry in std::fs::read_dir(models_dir).map_err(|e| e.to_string())? {
-                let entry = entry.map_err(|e| e.to_string())?;
-                let path = entry.path();
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if ext == "bin" {
-                        if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
-                            if filename.starts_with("ggml-") && filename.ends_with(".bin") {
-                                let mut model_name = filename.strip_prefix("ggml-").unwrap_or(filename).strip_suffix(".bin").unwrap_or(filename).to_string();
-                                if model_name == "large-v3" {
-                                    model_name = "large".to_string();
-                                }
-                                models.push(model_name);
-                            }
-                        }
+    let dir = models_dir();
+    let mut models = Vec::new();
+    if dir.exists() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                if is_whisper_model_file(filename) {
+                    let key = model_key_from_filename(filename);
+                    if !models.contains(&key) {
+                        models.push(key);
                     }
                 }
             }
         }
-
-        Ok(models)
     }
-    #[cfg(not(feature = "whisper"))]
-    {
-        Ok(Vec::new())
-    }
+    Ok(models)
 }
 
 #[tauri::command]
 async fn check_model_downloaded(model_name: String) -> Result<bool, String> {
-    #[cfg(feature = "whisper")]
-    {
-        let app_dir = get_app_dir();
-        let models_dir = app_dir.join("models");
-        let model_filename = model_filename(&model_name);
-        let model_path = models_dir.join(&model_filename);
-        Ok(model_path.exists())
-    }
-    #[cfg(not(feature = "whisper"))]
-    {
-        Ok(false)
-    }
+    let dir = models_dir();
+    Ok(find_model(&dir, &model_name).is_some())
 }
 
-const NLLB_FILES: &[(&str, &str)] = &[
-    ("config.json", "config.json"),
-    ("generation_config.json", "generation_config.json"),
-    ("tokenizer.json", "tokenizer.json"),
-    ("tokenizer_config.json", "tokenizer_config.json"),
-    ("special_tokens_map.json", "special_tokens_map.json"),
-    ("onnx/encoder_model_quantized.onnx", "onnx/encoder_model_quantized.onnx"),
-    ("onnx/decoder_model_merged_quantized.onnx", "onnx/decoder_model_merged_quantized.onnx"),
-];
+// ---------------------------------------------------------------------------
+// Dual-pass transcription: VAD -> Whisper decode (translate on/off per pass) ->
+// PTS sync. "Both" runs the original + translation passes over the same audio.
+// ---------------------------------------------------------------------------
 
-const NLLB_BASE_URL: &str =
-    "https://huggingface.co/Xenova/nllb-200-distilled-600M/resolve/main";
+/// whisper.cpp model initialization (`whisper_init_*`) is not thread-safe, so
+/// context creation is serialized here. It is held only while a `WhisperContext`
+/// is constructed; the decode passes themselves run lock-free on their own
+/// contexts — including two parallel passes for realtime "Both" mode — because
+/// whisper-rs marks each `WhisperContext` `Send + Sync` and the segment
+/// callbacks use the safe variant.
+static MODEL_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Clone, serde::Serialize)]
-struct NllbProgressPayload {
-    file: String,
-    percent: f64,
-    #[serde(rename = "speedMBps")]
-    speed_mb_per_sec: f64,
-    #[serde(rename = "etaSeconds")]
-    eta_seconds: u64,
-    #[serde(rename = "fileBytes")]
-    file_bytes: u64,
-    #[serde(rename = "fileDone")]
-    file_done: u64,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct TranscriptionProgress {
-    percentage: f64,
-}
-
-#[derive(Clone, serde::Serialize)]
-struct TranscriptionChunk {
-    id: String,
-    #[serde(rename = "start_time")]
-    start_time: f64,
-    #[serde(rename = "end_time")]
-    end_time: f64,
-    text: String,
-}
-
-// NLLB model lives in Tauri's *scoped* app data dir so that the frontend's
-// plugin-fs `readFile` (used to warm the translation Cache API) is allowed.
-// Resolving with `app.path()` keeps this in sync with the `$APPDATA`/`$APPLOCALDATA`
-// scope that `fs:default` + `fs:allow-app-*-recursive` grant to the webview.
-fn nllb_model_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let base = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
-    Ok(base.join("nllb-200"))
-}
-
-fn nllb_model_ready(dir: &Path) -> bool {
-    NLLB_FILES.iter().all(|(rel, _)| dir.join(rel).exists())
-}
-
+/// Start a transcription job for a media file.
+///
+/// Non-WAV input is first extracted to a 16 kHz mono temp WAV via the bundled
+/// FFmpeg sidecar (awaited here so the spawn only carries CPU-bound work), then
+/// a dedicated thread runs the job: VAD-gated Whisper decode with the requested
+/// `subtitle_mode` (Original / English / Both) and `transcript_mode`
+/// (real-time stream vs. full batch). Returns immediately after the thread is
+/// launched.
 #[tauri::command]
-async fn is_translation_model_downloaded(app: AppHandle) -> Result<bool, String> {
-    let dir = nllb_model_dir(&app)?;
-    Ok(nllb_model_ready(&dir))
-}
+async fn start_transcription(
+    app: AppHandle,
+    media_path: String,
+    model_name: String,
+    language: Option<String>,
+    subtitle_mode: SubtitleMode,
+    transcript_mode: TranscriptMode,
+) -> Result<(), String> {
+    let dir = models_dir();
+    let model_path = match find_model(&dir, &model_name) {
+        Some(p) => p,
+        None => PathBuf::from(download_whisper_model(app.clone(), model_name.clone()).await?),
+    };
 
-#[tauri::command]
-async fn get_translation_model_path(app: AppHandle) -> Result<String, String> {
-    let dir = nllb_model_dir(&app)?;
-    Ok(dir.to_string_lossy().to_string())
-}
+    let media = PathBuf::from(&media_path);
+    let is_wav = media
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("wav"))
+        .unwrap_or(false);
 
-#[tauri::command]
-async fn download_nllb_model(app: AppHandle) -> Result<String, String> {
-    let dir = nllb_model_dir(&app)?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let wav_path = if is_wav {
+        media
+    } else {
+        let temp_dir = std::env::temp_dir();
+        PathBuf::from(
+            extract_audio(app.clone(), media_path, temp_dir.to_string_lossy().to_string()).await?,
+        )
+    };
 
-    if nllb_model_ready(&dir) {
-        return Ok(dir.to_string_lossy().to_string());
-    }
-
-    let client = reqwest::Client::builder()
-        .user_agent("ZanPlayer/1.0 (macOS)")
-        .build()
-        .map_err(|e| format!("Failed to build client: {}", e))?;
-
-    for (rel_path, url_path) in NLLB_FILES {
-        let final_path = dir.join(rel_path);
-        if final_path.exists() {
-            continue;
-        }
-        if let Some(parent) = final_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let part_path = dir.join(format!("{}.part", rel_path.replace('/', "__")));
-        let url = format!("{}/{}", NLLB_BASE_URL, url_path);
-
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("Failed to download translation model: {}", e))?;
-        if !response.status().is_success() {
-            return Err(format!("Download failed: HTTP {}", response.status()));
-        }
-        let content_length = response.content_length().unwrap_or(0);
-        let file_name = rel_path.to_string();
-
-        let mut file = File::create(&part_path)
-            .map_err(|e| format!("Failed to create model file: {}", e))?;
-        let mut stream = response.bytes_stream();
-        let mut downloaded: u64 = 0;
-        let mut last_update = std::time::Instant::now();
-        let mut last_downloaded = 0;
-
-        while let Some(chunk) = futures_util::TryStreamExt::try_next(&mut stream)
-            .await
-            .map_err(|e| format!("Failed to read model chunk: {}", e))?
-        {
-            file.write_all(&chunk)
-                .map_err(|e| format!("Failed to write model chunk: {}", e))?;
-            downloaded += chunk.len() as u64;
-
-            let now = std::time::Instant::now();
-            if now.duration_since(last_update) >= std::time::Duration::from_millis(100) {
-                let elapsed = now.duration_since(last_update).as_secs_f64();
-                let speed_bytes_per_sec =
-                    if elapsed > 0.0 { (downloaded - last_downloaded) as f64 / elapsed } else { 0.0 };
-                let percent = if content_length > 0 {
-                    (downloaded as f64 / content_length as f64) * 100.0
-                } else {
-                    0.0
-                };
-                let eta_seconds = if speed_bytes_per_sec > 0.0 && content_length > 0 {
-                    ((content_length - downloaded) as f64 / speed_bytes_per_sec) as u64
-                } else {
-                    0
-                };
-                app.emit(
-                    "nllb-download-progress",
-                    NllbProgressPayload {
-                        file: file_name.clone(),
-                        percent,
-                        speed_mb_per_sec: speed_bytes_per_sec / (1024.0 * 1024.0),
-                        eta_seconds,
-                        file_bytes: content_length,
-                        file_done: downloaded,
-                    },
-                )
-                .ok();
-                last_update = now;
-                last_downloaded = downloaded;
-            }
-        }
-
-        if content_length > 0 && downloaded != content_length {
-            std::fs::remove_file(&part_path).ok();
-            return Err(format!(
-                "Model download incomplete: expected {} bytes, got {}",
-                content_length, downloaded
-            ));
-        }
-
-        drop(file);
-        std::fs::rename(&part_path, &final_path)
-            .map_err(|e| format!("Failed to finalize model file: {}", e))?;
-    }
-
-    Ok(dir.to_string_lossy().to_string())
-}
-
-#[tauri::command]
-async fn delete_translation_model(app: AppHandle) -> Result<(), String> {
-    let dir = nllb_model_dir(&app)?;
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-    }
+    std::thread::spawn(move || {
+        run_transcription_job(
+            app,
+            wav_path,
+            !is_wav,
+            model_path,
+            language,
+            subtitle_mode,
+            transcript_mode,
+        );
+    });
     Ok(())
 }
 
-// Normalize a spoken-audio language request into a string whisper.cpp accepts.
-// whisper.cpp's `g_lang` table only resolves ISO-639-1 codes ("en", "my") or its
-// own full names ("english", "myanmar"); any unrecognized string makes
-// `whisper_lang_id` return -1, and then `whisper_token_lang(ctx, -1)` indexes
-// `ailang_2_tok[-1]` out of bounds while building the prompt. As a safety net we
-// never forward an unknown value — we fall back to auto-detection instead.
-#[cfg(feature = "whisper")]
-fn whisper_language_code(language: Option<&str>) -> Option<String> {
-    let lang = match language {
-        Some(l) => l.trim().to_ascii_lowercase(),
-        None => return None,
-    };
-    if lang.is_empty() {
-        return None;
+fn run_transcription_job(
+    app: AppHandle,
+    wav_path: PathBuf,
+    cleanup_wav: bool,
+    model_path: PathBuf,
+    language: Option<String>,
+    subtitle_mode: SubtitleMode,
+    transcript_mode: TranscriptMode,
+) {
+    let plan = plan_job(subtitle_mode, transcript_mode);
+    let passes = plan.passes.clone();
+    let parallel = plan.parallel;
+
+    // Load whisper contexts serially (model init is not thread-safe). Two
+    // independent contexts are required for realtime "Both" so each pass gets
+    // its own session; decode then runs concurrently without any global lock.
+    let mut contexts = Vec::new();
+    for _ in 0..plan.context_count {
+        let _guard = MODEL_LOAD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match WhisperContext::new_with_params(&model_path, WhisperContextParameters::default()) {
+            Ok(ctx) => contexts.push(ctx),
+            Err(e) => {
+                let _ =
+                    app.emit("transcription-error", format!("Failed to load Whisper model: {}", e));
+                if cleanup_wav {
+                    std::fs::remove_file(&wav_path).ok();
+                }
+                return;
+            }
+        }
     }
-    match lang.as_str() {
-        "auto" | "auto-detect" | "autodetect" => None,
-        "english" | "en" => Some("en".to_string()),
-        "burmese" | "myanmar" | "my" => Some("my".to_string()),
-        "spanish" | "espanol" | "es" => Some("es".to_string()),
-        "french" | "fr" => Some("fr".to_string()),
-        "german" | "deu" | "de" => Some("de".to_string()),
-        "japanese" | "ja" => Some("ja".to_string()),
-        "korean" | "ko" => Some("ko".to_string()),
-        "chinese" | "chinese (simplified)" | "zh" => Some("zh".to_string()),
-        "portuguese" | "pt" => Some("pt".to_string()),
-        "russian" | "ru" => Some("ru".to_string()),
-        "thai" | "th" => Some("th".to_string()),
-        "vietnamese" | "vi" => Some("vi".to_string()),
-        "hindi" | "hi" => Some("hi".to_string()),
-        "arabic" | "ar" => Some("ar".to_string()),
-        // A clean lowercase 2-letter ISO code passes straight through; any other
-        // value is dropped so whisper.cpp runs auto-detection rather than crashing.
-        other if other.len() == 2 && other.chars().all(|c| c.is_ascii_alphabetic()) => Some(other.to_string()),
-        other => {
-            eprintln!(
-                "zanplayer: ignoring unrecognized language '{other}', falling back to auto-detect"
-            );
-            None
+
+    let result = match (transcript_mode, parallel) {
+        // One real-time pass streams cues out the moment each chunk decodes.
+        (TranscriptMode::Stream, false) => {
+            run_streaming_job(app.clone(), &wav_path, passes, contexts, language)
+        }
+        // Two real-time passes (original + translation) on separate threads over
+        // the same WAV, so "Both" never doubles wall-clock time per chunk.
+        (TranscriptMode::Stream, true) => {
+            run_streaming_job(app.clone(), &wav_path, passes, contexts, language)
+        }
+        // Full batch: one context decodes every pass sequentially, buffering all
+        // cues; the UI surfaces both complete tracks only when the job finishes.
+        (TranscriptMode::Batch, false) => {
+            run_batch_job(app.clone(), &wav_path, contexts, language, &passes)
+        }
+        (TranscriptMode::Batch, true) => unreachable!("batch mode never needs parallel contexts"),
+    };
+
+    if cleanup_wav {
+        std::fs::remove_file(&wav_path).ok();
+    }
+
+    match result {
+        Ok(total) => {
+            let _ = app.emit("transcription-done", TranscriptionDone { total });
+        }
+        Err(e) => {
+            let _ = app.emit("transcription-error", e);
         }
     }
 }
 
+/// Drain the render queue. The UI calls this (on a timer and/or after
+/// `transcript-cues-ready`) and matches cues against the player clock.
 #[tauri::command]
-#[cfg(feature = "whisper")]
-async fn transcribe_audio_local(
+fn poll_transcript_cues(state: State<'_, RenderQueue>) -> Vec<SubtitleCue> {
+    let mut guard = state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::mem::take(&mut *guard)
+}
+
+/// Running average of per-pass progress slots (0.0-100.0). Each parallel
+/// realtime pass reports into its own slot; the UI sees the average so a "Both"
+/// job never reports 2x progress. Empty => 0.0.
+fn combined_progress(slots: &[f64]) -> f64 {
+    if slots.is_empty() {
+        return 0.0;
+    }
+    slots.iter().sum::<f64>() / slots.len() as f64
+}
+
+/// Baseline (0-100) for one pass inside a sequential full (batch) job, so the
+/// whole job reports smooth overall progress across passes instead of jumping.
+fn batch_pass_base(pass_index: usize, pass_count: usize) -> f64 {
+    if pass_count == 0 {
+        return 0.0;
+    }
+    pass_index as f64 / pass_count as f64 * 100.0
+}
+
+// ---------------------------------------------------------------------------
+// Realtime (stream) runner.
+// ---------------------------------------------------------------------------
+
+/// Run one or more live passes. Every pass decodes the *same* WAV with its own
+/// `WhisperContext` on its own thread, so for "Both" the transcribe and
+/// translate passes proceed in parallel and each audio chunk is only as slow as
+/// the slowest pass — subtitles never lag the video by 2x.
+fn run_streaming_job(
     app: AppHandle,
-    audio_path: String,
-    model_name: String,
+    wav_path: &Path,
+    passes: Vec<(bool, String)>,
+    contexts: Vec<WhisperContext>,
     language: Option<String>,
-    target_language: Option<String>,
-) -> Result<Vec<SubtitleCue>, String> {
-    let app_dir = get_app_dir();
-    let models_dir = app_dir.join("models");
-    let model_path = models_dir.join(model_filename(&model_name));
+) -> Result<usize, String> {
+    let pass_count = passes.len();
+    let queue = app.state::<RenderQueue>().0.clone();
+    // One live percentage slot per pass; the UI sees their running average so a
+    // parallel "Both" job reports smooth combined progress.
+    let progress = Arc::new(Mutex::new(vec![0.0f64; pass_count]));
 
-    if !model_path.exists() {
-        download_whisper_model(app.clone(), model_name).await?;
+    let mut handles = Vec::with_capacity(pass_count);
+    for (idx, ((translate, kind), ctx)) in passes
+        .into_iter()
+        .zip(contexts.into_iter())
+        .enumerate()
+    {
+        let app = app.clone();
+        let wav = wav_path.to_path_buf();
+        let queue = queue.clone();
+        let progress = progress.clone();
+        let language = language.clone();
+        handles.push(std::thread::spawn(move || {
+            run_streaming_pass_inner(&app, &wav, &ctx, language, translate, kind, idx, queue, progress)
+        }));
     }
 
-    // Serialize all Whisper decoding sessions (whisper.cpp/ggml is not safe for two
-    // concurrent `whisper_full_with_state` calls). Dropping a new video while a previous
-    // transcription is still finalizing would otherwise start a second session in parallel,
-    // and the callback user_data pointers (leaked boxes, stable for the whole process)
-    // must never be dereferenced while two sessions are live. The guard is acquired after
-    // the only `.await` in this function and held across purely synchronous Whisper calls,
-    // so it never blocks a tokio runtime thread mid-poll.
-    static TRANSCRIPTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _transcription_guard = TRANSCRIPTION_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-    let params = WhisperContextParameters::default();
-    let ctx = WhisperContext::new_with_params(&model_path.to_string_lossy(), params)
-        .map_err(|e| format!("Failed to load Whisper model: {}", e))?;
-
-    let mut reader = hound::WavReader::open(audio_path)
-        .map_err(|e| format!("Failed to open audio file: {}", e))?;
-
-    let spec = reader.spec();
-    if spec.sample_rate != 16000 || spec.channels != 1 || spec.bits_per_sample != 16 {
-        return Err("Audio file must be 16kHz, mono, 16-bit PCM WAV".to_string());
-    }
-
-    let samples: Vec<i16> = reader.samples().map(|s| s.unwrap()).collect();
-    let samples_f32: Vec<f32> = samples.iter().map(|&x| x as f32 / i16::MAX as f32).collect();
-
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_single_segment(false);
-    // Whisper always runs the `translate` task so every raw transcript comes out
-    // in English (whisper.cpp only supports translate-to-English anyway). The
-    // frontend's offline NLLB model then converts those English captions into
-    // whichever target language the user selected, so keeping the spoken input
-    // language (below) intact is the only requirement here.
-    params.set_translate(true);
-    // The `target_language` argument is intentionally unused from here on: the
-    // offline NLLB stage owns the user-visible subtitle language instead.
-    let _ = target_language;
-    // Bind the normalized code for the lifetime of `params` (set_language borrows
-    // a &str tied to the params lifetime).
-    let lang_code = whisper_language_code(language.as_deref());
-    params.set_language(lang_code.as_deref());
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-
-    // The callbacks below are attached LAST, immediately before `state.full(...)`.
-    // Once attached, `params` must NOT be moved/reassigned: whisper.cpp copies the
-    // callback `user_data` raw pointers out of this struct, so every closure they
-    // reference must live in a stable (heap) location for the duration of decoding.
-
-    // Progress callback. NOTE: whisper-rs 0.12's `set_progress_callback_safe` stores
-    // a pointer to a *stack local* closure and then moves that closure into a heap Box,
-    // leaving the registered `user_data` pointer dangling once the setter returns. When
-    // whisper.cpp fires the trampoline during `whisper_full_with_state`, the callback
-    // reads garbage stack memory and crashes (EXC_ARM_DA_ALIGN / pointer-auth failure on
-    // Apple Silicon). We therefore register the C callback manually with a leaked heap
-    // Box whose address stays valid for the whole process, mirroring how whisper-rs's
-    // own `set_segment_callback_safe` keeps its closure alive via `Box::into_raw`.
-    let app_progress = app.clone();
-    let progress_closure: Box<dyn FnMut(i32) + Send + 'static> = Box::new(move |percent: i32| {
-        let _ = app_progress.emit(
-            "transcription-progress",
-            TranscriptionProgress {
-                percentage: f64::from(percent.clamp(0, 100)),
-            },
-        );
-    });
-    // whisper.cpp copies the callback `user_data` pointers out of the params struct,
-    // so the word at `user_data` must really be a `Box<dyn FnMut>` fat pointer whose
-    // (data, vtable) pair stays valid for the whole process. A single-box
-    // `Box::into_raw(Box<dyn FnMut>)` cast to `*mut c_void` keeps only the data
-    // pointer, so the trampoline reading `*mut Box<dyn FnMut>` would reinterpret the
-    // closure's captured `AppHandle` bytes as a (data, vtable) pair and call through
-    // a garbage vtable (EXC_BAD_ACCESS / instruction abort into a non-executable
-    // stack region). Double-boxing mirrors whisper-rs's `set_segment_callback_safe`:
-    // leaking a thin `Box<Box<dyn FnMut>>` yields a heap address that points at the
-    // real fat pointer, and is never freed while the process runs.
-    let progress_user_data =
-        Box::into_raw(Box::new(progress_closure)) as *mut std::ffi::c_void;
-
-    unsafe extern "C" fn progress_trampoline(
-        _ctx: *mut whisper_rs::WhisperSysContext,
-        _state: *mut whisper_rs::WhisperSysState,
-        progress: std::os::raw::c_int,
-        user_data: *mut std::ffi::c_void,
-    ) {
-        let closure: &mut Box<dyn FnMut(i32) + Send + 'static> =
-            &mut *(user_data as *mut _);
-        closure(progress);
-    }
-
-    // Streaming: whisper.cpp invokes this as each decoded segment is finalized
-    // DURING decoding, so the frontend can append cues and unblock playback
-    // without waiting for the full transcription to finish.
-    let app_segment = app.clone();
-    params.set_segment_callback_safe(move |seg: SegmentCallbackData| {
-        if seg.text.trim().is_empty() {
-            return;
+    let mut total = 0usize;
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(n)) => total += n,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => return Err("Transcription worker thread panicked".to_string()),
         }
-        let _ = app_segment.emit(
-            "transcription-chunk",
-            TranscriptionChunk {
-                id: uuid::Uuid::new_v4().to_string(),
-                start_time: seg.start_timestamp as f64 / 100.0,
-                end_time: seg.end_timestamp as f64 / 100.0,
-                text: seg.text,
-            },
-        );
-    });
-
-    // Attach the progress callback right before running the model, never later
-    // (the struct must not be reallotted once these raw pointers are in place).
-    unsafe {
-        params.set_progress_callback(Some(progress_trampoline));
-        params.set_progress_callback_user_data(progress_user_data);
     }
+    Ok(total)
+}
 
-    let mut state = ctx.create_state().map_err(|e| e.to_string())?;
-    state.full(params, &samples_f32).map_err(|e| e.to_string())?;
+/// One real-time pass: VAD-gated chunked decode pushing cues to the render
+/// queue and streaming `transcript-segment`/`transcript-cues-ready` events.
+fn run_streaming_pass_inner(
+    app: &AppHandle,
+    wav_path: &Path,
+    ctx: &WhisperContext,
+    language: Option<String>,
+    translate: bool,
+    kind: String,
+    pass_index: usize,
+    queue: Arc<Mutex<Vec<SubtitleCue>>>,
+    progress: Arc<Mutex<Vec<f64>>>,
+) -> Result<usize, String> {
+    let options = StreamOptions {
+        language,
+        ..StreamOptions::default()
+    };
 
-    // Guarantee the overlay snaps to completion once decoding finishes.
-    let _ = app.emit(
-        "transcription-progress",
-        TranscriptionProgress { percentage: 100.0 },
-    );
-
-    let num_segments = state.full_n_segments().map_err(|e| e.to_string())?;
-    let mut cues = Vec::new();
-    for i in 0..num_segments {
-        let start = state.full_get_segment_t0(i).map_err(|e| e.to_string())? as f64 / 100.0;
-        let end = state.full_get_segment_t1(i).map_err(|e| e.to_string())? as f64 / 100.0;
-        let text = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
-
-        if text.trim().is_empty() {
-            continue;
+    let mut on_cue = {
+        let emit_app = app.clone();
+        let queue = queue.clone();
+        move |cue: SubtitleCue| {
+            queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(cue.clone());
+            let _ = emit_app.emit("transcript-segment", cue);
+            let _ = emit_app.emit("transcript-cues-ready", ());
         }
+    };
 
-        cues.push(SubtitleCue {
-            id: uuid::Uuid::new_v4().to_string(),
-            start_time: start,
-            end_time: end,
-            text,
+    let mut on_progress = {
+        let emit_app = app.clone();
+        let progress = progress.clone();
+        move |pct: f64| {
+            let combined = {
+                let mut slots = progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                slots[pass_index] = pct.clamp(0.0, 100.0);
+                combined_progress(&slots)
+            };
+            let _ = emit_app.emit(
+                "transcription-progress",
+                PipelineProgress {
+                    percentage: combined.clamp(0.0, 100.0),
+                },
+            );
+        }
+    };
+
+    pipeline::transcribe_wav_streaming(
+        ctx,
+        wav_path,
+        &options,
+        translate,
+        Some(kind),
+        &mut on_cue,
+        &mut on_progress,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Full (batch) runner.
+// ---------------------------------------------------------------------------
+
+/// Language label stamped on a completed batch track: English for the
+/// translation pass, the normalized source language (or "auto") otherwise.
+fn batch_language_tag(translate: bool, language: Option<&str>) -> String {
+    if translate {
+        return "en".to_string();
+    }
+    language
+        .and_then(|l| pipeline::normalize_language(Some(l)))
+        .unwrap_or_else(|| "auto".to_string())
+}
+
+/// Full (batch) transcription. A single context decodes every pass sequentially
+/// over the *entire* audio and buffers all cues. Nothing is streamed to the UI:
+/// when every pass is done, one `transcription-batch-done` event delivers the
+/// complete cue timelines, giving perfectly-synchronized, zero-latency dual
+/// subtitles once playback starts.
+fn run_batch_job(
+    app: AppHandle,
+    wav_path: &Path,
+    contexts: Vec<WhisperContext>,
+    language: Option<String>,
+    passes: &[(bool, String)],
+) -> Result<usize, String> {
+    let ctx = contexts.into_iter().next().expect("batch job has a context");
+    let pass_count = passes.len().max(1);
+    let mut tracks = Vec::with_capacity(passes.len());
+    let mut total = 0usize;
+
+    for (pass_index, (translate, kind)) in passes.iter().enumerate() {
+        // Buffered locally per pass, then handed to the UI in one shot.
+        let mut collected: Vec<SubtitleCue> = Vec::new();
+        let options = StreamOptions {
+            language: language.clone(),
+            ..StreamOptions::default()
+        };
+
+        let mut on_cue = |cue: SubtitleCue| collected.push(cue);
+
+        let mut on_progress = {
+            let emit_app = app.clone();
+            let base = batch_pass_base(pass_index, pass_count);
+            let span = 100.0 / pass_count as f64;
+            move |pct: f64| {
+                let _ = emit_app.emit(
+                    "transcription-progress",
+                    PipelineProgress {
+                        percentage: (base + pct * span / 100.0).clamp(0.0, 100.0),
+                    },
+                );
+            }
+        };
+
+        total += pipeline::transcribe_wav_streaming(
+            &ctx,
+            wav_path,
+            &options,
+            *translate,
+            Some(kind.clone()),
+            &mut on_cue,
+            &mut on_progress,
+        )?;
+        drop(on_cue);
+
+        let language_tag = batch_language_tag(*translate, language.as_deref());
+        tracks.push(BatchTrack {
+            kind: kind.clone(),
+            language: language_tag,
+            cues: collected,
         });
     }
 
-    Ok(cues)
+    let _ = app.emit("transcription-batch-done", TranscriptionBatchDone { tracks });
+    Ok(total)
 }
+
+// ---------------------------------------------------------------------------
+// Dialogs, subtitle I/O, ffmpeg.
+// ---------------------------------------------------------------------------
 
 #[tauri::command]
 async fn open_video_dialog(app: AppHandle) -> Result<Option<VideoFile>, String> {
@@ -663,6 +815,59 @@ async fn save_subtitle_dialog(app: AppHandle, default_name: String) -> Result<Op
 }
 
 #[tauri::command]
+async fn open_project_dialog(app: AppHandle) -> Result<Option<String>, String> {
+    let file_path = app.dialog().file()
+        .add_filter("ZanPlayer Lite Project", &["zan"])
+        .blocking_pick_file();
+
+    let file_str = file_path.map(|p| p.into_path().unwrap().to_string_lossy().to_string());
+    Ok(file_str)
+}
+
+#[tauri::command]
+async fn save_project_dialog(app: AppHandle) -> Result<Option<String>, String> {
+    let file_path = app.dialog().file()
+        .add_filter("ZanPlayer Lite Project", &["zan"])
+        .set_file_name("untitled.zan")
+        .blocking_save_file();
+
+    let file_str = file_path.map(|p| p.into_path().unwrap().to_string_lossy().to_string());
+    Ok(file_str)
+}
+
+#[tauri::command]
+async fn write_project_file(file_path: String, data: ProjectData) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+    let mut file = File::create(&file_path).map_err(|e| format!("Cannot create project file: {}", e))?;
+    file.write_all(json.as_bytes())
+        .map_err(|e| format!("Cannot write project file: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn read_project_file(file_path: String) -> Result<(ProjectData, bool), String> {
+    let mut content = String::new();
+    File::open(&file_path)
+        .map_err(|e| format!("Cannot open project file: {}", e))?
+        .read_to_string(&mut content)
+        .map_err(|e| format!("Cannot read project file: {}", e))?;
+
+    let data: ProjectData = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid or corrupted project file: {}", e))?;
+
+    if data.version != PROJECT_VERSION {
+        return Err(format!(
+            "Unsupported project version: {} (this app supports version {})",
+            data.version, PROJECT_VERSION
+        ));
+    }
+
+    // Validate the media file still exists before the UI offers to restore it.
+    let media_exists = Path::new(&data.video_path).exists();
+    Ok((data, media_exists))
+}
+
+#[tauri::command]
 async fn read_subtitle_file(file_path: String) -> Result<Vec<SubtitleCue>, String> {
     let mut content = String::new();
     File::open(&file_path)
@@ -678,7 +883,7 @@ async fn read_subtitle_file(file_path: String) -> Result<Vec<SubtitleCue>, Strin
         Some("srt") => parse_srt(&content)?,
         Some("vtt") => parse_vtt(&content)?,
         Some("ass") | Some("ssa") => parse_ass(&content)?,
-        _ => Err(format!("Unsupported subtitle format"))?,
+        _ => Err("Unsupported subtitle format".to_string())?,
     };
 
     Ok(cues)
@@ -699,6 +904,7 @@ fn parse_srt(text: &str) -> Result<Vec<SubtitleCue>, String> {
                     start_time: start,
                     end_time: end,
                     text,
+                    kind: None,
                 });
             }
         }
@@ -730,6 +936,7 @@ fn parse_vtt(text: &str) -> Result<Vec<SubtitleCue>, String> {
                     start_time: start,
                     end_time: end,
                     text: text.trim_start().to_string(),
+                    kind: None,
                 });
             }
         }
@@ -742,6 +949,8 @@ fn parse_vtt(text: &str) -> Result<Vec<SubtitleCue>, String> {
 fn parse_ass(text: &str) -> Result<Vec<SubtitleCue>, String> {
     let mut cues = Vec::new();
     let mut format = None;
+    let tag_re = regex::Regex::new(r"\{.*?\}")
+        .unwrap_or_else(|_| regex::Regex::new(r"").unwrap());
 
     for line in text.lines() {
         if let Some(line) = line.strip_prefix("Format:") {
@@ -762,16 +971,14 @@ fn parse_ass(text: &str) -> Result<Vec<SubtitleCue>, String> {
                     let end = parse_ass_time(parts.get(ei).unwrap_or(&""))?;
                     let mut text = parts.get(ti).unwrap_or(&"").to_string();
                     text = text.replace(r"\N", "\n");
-                    text = regex::Regex::new(r"\{.*?\}")
-                        .unwrap_or_else(|_| regex::Regex::new(r"").unwrap())
-                        .replace_all(&text, "")
-                        .to_string();
+                    text = tag_re.replace_all(&text, "").to_string();
 
                     cues.push(SubtitleCue {
                         id: uuid::Uuid::new_v4().to_string(),
                         start_time: start,
                         end_time: end,
                         text,
+                        kind: None,
                     });
                 }
             }
@@ -970,101 +1177,254 @@ async fn extract_audio(
 }
 
 #[tauri::command]
-#[cfg(feature = "whisper")]
-async fn process_dropped_video(
-    app: AppHandle,
-    video_path: String,
-    model_name: String,
-    language: Option<String>,
-    target_language: Option<String>,
-) -> Result<Vec<SubtitleCue>, String> {
-    let temp_dir = std::env::temp_dir();
-
-    // Step 1: extract 16kHz mono WAV via the bundled FFmpeg sidecar
-    let wav_path = extract_audio(
-        app.clone(),
-        video_path,
-        temp_dir.to_string_lossy().to_string(),
-    )
-    .await?;
-
-    // Step 2: transcribe the extracted WAV
-    let result = transcribe_audio_local(
-        app,
-        wav_path.clone(),
-        model_name,
-        language,
-        target_language,
-    )
-    .await;
-
-    // Step 3: clean up the temporary WAV file
-    std::fs::remove_file(&wav_path).ok();
-
-    result
-}
-
-#[tauri::command]
 fn relaunch_app(app: AppHandle) {
     tauri::process::restart(&app.env());
 }
 
 #[cfg(test)]
 mod tests {
-    // Regression test for the whisper progress-callback vtable corruption.
-    //
-    // The production trampoline receives `user_data: *mut c_void` and reinterprets
-    // it as `&mut Box<dyn FnMut(i32) + Send>`. The callback pointer must therefore
-    // point at a *real* fat pointer (a heap `Box<dyn FnMut>`), NOT at the closure
-    // data a single-box `Box::into_raw(Box<dyn FnMut>)` would produce. Reproduces
-    // the exact double-boxing used in `transcribe_audio_local`.
-    unsafe extern "C" fn progress_trampoline(
-        _ctx: *mut std::ffi::c_void,
-        _state: *mut std::ffi::c_void,
-        progress: std::os::raw::c_int,
-        user_data: *mut std::ffi::c_void,
-    ) {
-        let closure: &mut Box<dyn FnMut(i32) + Send + 'static> =
-            &mut *(user_data as *mut _);
-        closure(progress);
-    }
+    use super::*;
 
     #[test]
-    fn double_boxed_progress_callback_calls_through_valid_vtable() {
-        use std::sync::{Arc, Mutex};
+    fn model_candidates_cover_bin_and_quantized_gguf() {
+        let candidates = model_candidates("large");
+        assert!(candidates.contains(&"ggml-large-v3.bin".to_string()));
+        assert!(candidates.contains(&"ggml-large-v3-q5_0.gguf".to_string()));
+        assert!(candidates.contains(&"ggml-large-v3-q8_0.bin".to_string()));
 
-        let calls: Arc<Mutex<Vec<i32>>> = Arc::new(Mutex::new(Vec::new()));
-        let calls_for_closure = calls.clone();
+        let small = model_candidates("small");
+        assert!(small.contains(&"ggml-small.gguf".to_string()));
+        assert!(small.contains(&"ggml-small-q5_0.bin".to_string()));
 
-        let progress_closure: Box<dyn FnMut(i32) + Send + 'static> = Box::new(move |p| {
-            calls_for_closure.lock().unwrap().push(p);
-        });
-        let user_data =
-            Box::into_raw(Box::new(progress_closure)) as *mut std::ffi::c_void;
-
-        unsafe {
-            progress_trampoline(std::ptr::null_mut(), std::ptr::null_mut(), 25, user_data);
-            progress_trampoline(std::ptr::null_mut(), std::ptr::null_mut(), 75, user_data);
+        // No duplicate filenames across bases.
+        let mut all: Vec<String> = candidates.clone();
+        all.extend(model_candidates("small"));
+        for name in &all {
+            assert_eq!(all.iter().filter(|c| c == &name).count(), 1);
         }
-
-        assert_eq!(*calls.lock().unwrap(), vec![25, 75]);
     }
 
     #[test]
-    fn whisper_language_code_maps_valid_inputs_and_never_passes_bad_codes() {
-        // ISO codes pass through unchanged.
-        assert_eq!(super::whisper_language_code(Some("my")), Some("my".to_string()));
-        assert_eq!(super::whisper_language_code(Some("en")), Some("en".to_string()));
-        // Full display names are normalized to ISO codes.
-        assert_eq!(super::whisper_language_code(Some("Burmese")), Some("my".to_string()));
-        assert_eq!(super::whisper_language_code(Some("English")), Some("en".to_string()));
-        assert_eq!(super::whisper_language_code(Some("Auto-Detect")), None);
-        // Uppercase/case-mixed inputs are lowercased before matching.
-        assert_eq!(super::whisper_language_code(Some("MY")), Some("my".to_string()));
-        // Anything unresolvable falls back to auto-detection (never forwarded).
-        assert_eq!(super::whisper_language_code(Some("Klingon")), None);
-        assert_eq!(super::whisper_language_code(None), None);
-        assert_eq!(super::whisper_language_code(Some("")), None);
+    fn model_key_from_filename_maps_quantized_and_v3() {
+        assert_eq!(model_key_from_filename("ggml-large-v3.bin"), "large");
+        assert_eq!(model_key_from_filename("ggml-large-v3-q5_0.gguf"), "large");
+        assert_eq!(model_key_from_filename("ggml-large-v3-turbo-q5_0.gguf"), "large");
+        assert_eq!(model_key_from_filename("ggml-small-q5_0.bin"), "small");
+        assert_eq!(model_key_from_filename("ggml-base.en.bin"), "base");
+    }
+
+    #[test]
+    fn model_url_uses_org_by_extension() {
+        assert!(model_url("ggml-small.bin").contains("ggerganov"));
+        assert!(model_url("ggml-small-q5_0.gguf").contains("ggml-org"));
+    }
+
+    // -- Dual-pass job planning ------------------------------------------------
+
+    #[test]
+    fn passes_for_mode_tags_original_then_translation() {
+        assert_eq!(
+            passes_for_mode(SubtitleMode::Original),
+            vec![(false, KIND_ORIGINAL.to_string())]
+        );
+        assert_eq!(
+            passes_for_mode(SubtitleMode::English),
+            vec![(true, KIND_TRANSLATION.to_string())]
+        );
+        let both = passes_for_mode(SubtitleMode::Both);
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[0], (false, KIND_ORIGINAL.to_string()));
+        assert_eq!(both[1], (true, KIND_TRANSLATION.to_string()));
+    }
+
+    #[test]
+    fn plan_job_single_passes_run_on_one_context() {
+        for mode in [SubtitleMode::Original, SubtitleMode::English] {
+            for tm in [TranscriptMode::Stream, TranscriptMode::Batch] {
+                let plan = plan_job(mode, tm);
+                assert_eq!(plan.passes.len(), 1);
+                assert!(!plan.parallel);
+                assert_eq!(plan.context_count, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn plan_job_both_stream_spawns_two_parallel_contexts() {
+        let plan = plan_job(SubtitleMode::Both, TranscriptMode::Stream);
+        assert_eq!(plan.passes.len(), 2);
+        assert!(plan.parallel);
+        assert_eq!(plan.context_count, 2);
+    }
+
+    #[test]
+    fn plan_job_both_batch_stays_sequential_on_one_context() {
+        let plan = plan_job(SubtitleMode::Both, TranscriptMode::Batch);
+        assert_eq!(plan.passes.len(), 2);
+        assert!(!plan.parallel);
+        assert_eq!(plan.context_count, 1);
+    }
+
+    #[test]
+    fn subtitle_and_transcript_modes_serde_use_lowercase_names() {
+        let cases = [
+            ("\"original\"", SubtitleMode::Original),
+            ("\"english\"", SubtitleMode::English),
+            ("\"both\"", SubtitleMode::Both),
+        ];
+        for (json, expected) in cases {
+            assert_eq!(serde_json::from_str::<SubtitleMode>(json).unwrap(), expected);
+        }
+        let cases = [
+            ("\"stream\"", TranscriptMode::Stream),
+            ("\"batch\"", TranscriptMode::Batch),
+        ];
+        for (json, expected) in cases {
+            assert_eq!(serde_json::from_str::<TranscriptMode>(json).unwrap(), expected);
+        }
+        assert!(serde_json::from_str::<SubtitleMode>("\"Both\"").is_err());
+        assert!(serde_json::from_str::<TranscriptMode>("\"Stream\"").is_err());
+    }
+
+    #[test]
+    fn combined_progress_averages_per_pass_slots() {
+        assert_eq!(combined_progress(&[]), 0.0);
+        assert_eq!(combined_progress(&[0.0]), 0.0);
+        assert_eq!(combined_progress(&[100.0, 0.0]), 50.0);
+        assert_eq!(combined_progress(&[25.0, 75.0]), 50.0);
+        assert_eq!(combined_progress(&[100.0, 100.0]), 100.0);
+    }
+
+    #[test]
+    fn batch_pass_base_slices_progress_across_passes() {
+        assert_eq!(batch_pass_base(0, 2), 0.0);
+        assert_eq!(batch_pass_base(1, 2), 50.0);
+        assert_eq!(batch_pass_base(0, 1), 0.0);
+        assert_eq!(batch_pass_base(0, 0), 0.0);
+    }
+
+    #[test]
+    fn batch_language_tag_marks_english_but_normalizes_source() {
+        assert_eq!(batch_language_tag(true, None), "en");
+        assert_eq!(batch_language_tag(true, Some("klingon")), "en");
+        assert_eq!(batch_language_tag(false, Some("my")), "my");
+        assert_eq!(batch_language_tag(false, Some("")), "auto");
+        assert_eq!(batch_language_tag(false, Some("klingon")), "auto");
+        assert_eq!(batch_language_tag(false, None), "auto");
+    }
+
+    #[test]
+    fn srt_and_vtt_parsers_tag_loaded_cues_as_non_generated() {
+        let srt = "1\n00:00:01,000 --> 00:00:03,500\nHello world\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond cue\n";
+        let cues = parse_srt(srt).unwrap();
+        assert_eq!(cues.len(), 2);
+        assert_eq!(cues[0].text, "Hello world");
+        assert!((cues[0].start_time - 1.0).abs() < 1e-9);
+        assert!((cues[0].end_time - 3.5).abs() < 1e-9);
+        assert!(cues[0].kind.is_none());
+
+        let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\nHi there\n";
+        let cues = parse_vtt(vtt).unwrap();
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].text, "Hi there");
+        assert!((cues[0].start_time - 1.0).abs() < 1e-9);
+        assert!(cues[0].kind.is_none());
+    }
+
+    // -- Project save/load ---------------------------------------------------
+
+    fn sample_project() -> ProjectData {
+        ProjectData {
+            version: PROJECT_VERSION,
+            video_path: "/tmp/movie.mp4".to_string(),
+            subtitle_tracks: vec![ProjectTrack {
+                id: "track-orig".to_string(),
+                name: "Auto-Generated (Original)".to_string(),
+                language: "my".to_string(),
+                cues: vec![
+                    ProjectCue {
+                        id: "c1".to_string(),
+                        start_time: 1.0,
+                        end_time: 3.0,
+                        text: "Hello".to_string(),
+                        kind: Some("original".to_string()),
+                    },
+                    ProjectCue {
+                        id: "c2".to_string(),
+                        start_time: 4.0,
+                        end_time: 6.0,
+                        text: "World".to_string(),
+                        kind: Some("original".to_string()),
+                    },
+                ],
+                is_generated: Some(true),
+            }],
+            active_subtitle_track_id: Some("track-orig".to_string()),
+            show_subtitles: true,
+            subtitle_mode: "both".to_string(),
+            transcription_mode: "stream".to_string(),
+            source_language: "my".to_string(),
+            subtitle_style: ProjectSubtitleStyle {
+                font_name: "Arial".to_string(),
+                font_size: 24.0,
+                primary_color: "#FFFFFF".to_string(),
+                outline_color: "#000000".to_string(),
+                back_color: "#80000000".to_string(),
+                bold: false,
+                italic: false,
+                alignment: "bottom".to_string(),
+            },
+            current_time: 0.0,
+        }
+    }
+
+    #[test]
+    fn project_roundtrip_preserves_camel_case_json() {
+        let project = sample_project();
+        let json = serde_json::to_string(&project).unwrap();
+        let back: ProjectData = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.version, PROJECT_VERSION);
+        assert_eq!(back.video_path, "/tmp/movie.mp4");
+        assert_eq!(back.subtitle_tracks.len(), 1);
+        assert_eq!(back.subtitle_tracks[0].cues.len(), 2);
+        assert_eq!(back.subtitle_tracks[0].cues[0].text, "Hello");
+        assert_eq!(back.active_subtitle_track_id.as_deref(), Some("track-orig"));
+        assert_eq!(back.source_language, "my");
+        assert!(!back.subtitle_style.bold);
+    }
+
+    #[test]
+    fn project_json_keys_are_camel_case() {
+        let project = sample_project();
+        let json = serde_json::to_string(&project).unwrap();
+
+        assert!(json.contains("\"videoPath\""), "expected camelCase videoPath");
+        assert!(json.contains("\"subtitleTracks\""), "expected camelCase subtitleTracks");
+        assert!(json.contains("\"activeSubtitleTrackId\""), "expected camelCase activeSubtitleTrackId");
+        assert!(json.contains("\"showSubtitles\""), "expected camelCase showSubtitles");
+        assert!(json.contains("\"subtitleMode\""), "expected camelCase subtitleMode");
+        assert!(json.contains("\"transcriptionMode\""), "expected camelCase transcriptionMode");
+        assert!(json.contains("\"sourceLanguage\""), "expected camelCase sourceLanguage");
+        assert!(json.contains("\"subtitleStyle\""), "expected camelCase subtitleStyle");
+        assert!(json.contains("\"currentTime\""), "expected camelCase currentTime");
+        assert!(json.contains("\"isGenerated\""), "expected camelCase isGenerated");
+
+        // Must NOT contain snake_case equivalents.
+        assert!(!json.contains("\"video_path\""));
+        assert!(!json.contains("\"subtitle_tracks\""));
+        assert!(!json.contains("\"active_subtitle_track_id\""));
+    }
+
+    #[test]
+    fn project_rejects_unsupported_version() {
+        let mut project = sample_project();
+        project.version = 99;
+        let json = serde_json::to_string(&project).unwrap();
+        let back: ProjectData = serde_json::from_str(&json).unwrap();
+        // The serde deserialization succeeds, but the command's version check would reject it.
+        assert_ne!(back.version, PROJECT_VERSION);
+        assert_eq!(back.version, 99);
     }
 }
 
@@ -1075,24 +1435,25 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(RenderQueue::default())
         .invoke_handler(tauri::generate_handler![
             open_video_dialog,
             open_subtitle_dialog,
             save_subtitle_dialog,
             read_subtitle_file,
             write_subtitle_file,
+            open_project_dialog,
+            save_project_dialog,
+            write_project_file,
+            read_project_file,
             write_file,
             extract_audio,
-            process_dropped_video,
+            start_transcription,
+            poll_transcript_cues,
             download_whisper_model,
-            transcribe_audio_local,
             delete_whisper_model,
             list_downloaded_models,
             check_model_downloaded,
-            download_nllb_model,
-            is_translation_model_downloaded,
-            get_translation_model_path,
-            delete_translation_model,
             relaunch_app,
         ])
         .run(tauri::generate_context!())

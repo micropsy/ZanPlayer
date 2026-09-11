@@ -1,10 +1,9 @@
-import { useAppStore, SUBTITLE_LANGUAGES } from "../services/store";
+import { useAppStore } from "../services/store";
 import { Languages, Settings as SettingsIcon, CheckCircle2, Info, Download, Trash2, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isTauri } from "../services/tauri";
 import { checkForUpdates } from "../services/updater";
 import { getVersion } from "@tauri-apps/api/app";
-import { translationService } from "../services/translation";
 import logoUrl from "../assets/icon.png";
 
 interface WhisperModel {
@@ -128,14 +127,6 @@ export const SettingsComponent = () => {
     loadDownloadedModels,
     downloadModel,
     deleteModel,
-    translationModelAvailable,
-    setTranslationModelAvailable,
-    translationModelLoading,
-    translationError,
-    targetLanguage,
-    setTargetLanguage,
-    transcriptionMode,
-    setTranscriptionMode,
     autoCheckUpdates,
     setAutoCheckUpdates,
     updateStatus,
@@ -143,41 +134,11 @@ export const SettingsComponent = () => {
   } = useAppStore();
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
-  const [translationProgress, setTranslationProgress] = useState<number | null>(null);
-  const [translationPhase, setTranslationPhase] = useState<"downloading" | "preparing" | null>(null);
   const [appVersion, setAppVersion] = useState<string>("");
 
   useEffect(() => {
     loadDownloadedModels();
-    translationService.isModelAvailable().then((available) => {
-      setTranslationModelAvailable(available);
-    });
-  }, [loadDownloadedModels, setTranslationModelAvailable]);
-
-  const handleDownloadTranslationModel = async () => {
-    setTranslationProgress(0);
-    setTranslationPhase("downloading");
-    try {
-      await translationService.loadModel((percent, phase) => {
-        setTranslationProgress(percent);
-        setTranslationPhase(phase);
-      });
-    } catch (err) {
-      console.error("Failed to set up translation model:", err);
-    } finally {
-      setTranslationPhase(null);
-    }
-  };
-
-  const handleRemoveTranslationModel = async () => {
-    setTranslationProgress(null);
-    setTranslationPhase(null);
-    try {
-      await translationService.deleteModel();
-    } catch (err) {
-      console.error("Failed to remove translation model:", err);
-    }
-  };
+  }, [loadDownloadedModels]);
 
   const handleCheckUpdate = () => {
     if (updateStatus === "ready") {
@@ -235,7 +196,7 @@ export const SettingsComponent = () => {
                   Automatically check for updates on startup
                 </span>
                 <span className={`block text-xs ${labelClass(theme)}`}>
-                  ZanPlayer silently looks for new versions when it launches.
+                  ZanPlayer Lite silently looks for new versions when it launches.
                 </span>
               </div>
               <Toggle on={autoCheckUpdates} onClick={() => setAutoCheckUpdates(!autoCheckUpdates)} />
@@ -489,170 +450,6 @@ export const SettingsComponent = () => {
         </div>
       </section>
 
-      {/* Translation Model */}
-      <section className="space-y-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h3 className={`text-sm font-semibold ${valueClass(theme)}`}>
-              Translation Model (Offline)
-            </h3>
-            <Languages className={`w-4 h-4 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`} />
-          </div>
-          <p className={`text-xs ${labelClass(theme)}`}>
-            Offline machine translation for subtitles. Runs entirely on your device — no internet after download.
-          </p>
-        </div>
-
-        <div className={`p-4 rounded-xl border ${card(theme)}`}>
-          <div className="flex items-start justify-between gap-3 mb-2">
-            <div className="flex items-center flex-wrap gap-2 min-w-0 flex-1">
-              <span className={`text-base font-semibold ${valueClass(theme)}`}>
-                NLLB-200
-              </span>
-              <span className="px-1.5 py-0.5 bg-purple-500/15 text-purple-400 text-[10px] font-semibold rounded-full">
-                Multilingual
-              </span>
-              <span className="px-1.5 py-0.5 bg-zan-cyan/15 text-zan-cyan text-[10px] font-semibold rounded-full">
-                Offline
-              </span>
-              {translationModelAvailable && (
-                <span className="px-1.5 py-0.5 bg-green-500/10 text-green-400 text-[10px] font-semibold rounded-full">
-                  Ready
-                </span>
-              )}
-            </div>
-            <span className={`text-xs font-medium ${labelClass(theme)} whitespace-nowrap shrink-0`}>
-              ~900MB
-            </span>
-          </div>
-          <p className={`text-[11px] ${labelClass(theme)}`}>
-            Translate subtitles between 200+ languages directly inside ZanPlayer using a local int8
-            NLLB-200 model. Downloads once and runs fully offline.
-          </p>
-
-          {translationModelAvailable ? (
-            <div className="mt-4 flex items-center justify-between gap-3">
-              <span className="flex items-center gap-1.5 text-[11px] text-green-400">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                Translation engine ready
-              </span>
-              <button
-                onClick={handleRemoveTranslationModel}
-                disabled={translationModelLoading}
-                className={`p-2 rounded-lg ${
-                  theme === 'dark'
-                    ? 'text-gray-400 hover:text-red-400 hover:bg-red-500/20'
-                    : 'text-gray-500 hover:text-red-500 hover:bg-red-50'
-                }`}
-                title="Remove downloaded translation model"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          ) : (
-            <div className="mt-4">
-              <div className="flex items-center justify-between gap-3">
-                <button
-                  onClick={handleDownloadTranslationModel}
-                  disabled={translationModelLoading || !isTauri()}
-                  className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                    !isTauri()
-                      ? "bg-gray-400 cursor-not-allowed"
-                      : translationModelLoading
-                        ? "bg-gray-600 cursor-not-allowed"
-                        : "bg-zan-blue hover:bg-zan-deep text-white"
-                  }`}
-                >
-                  {translationModelLoading ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Download className="w-3.5 h-3.5" />
-                  )}
-                  {translationModelLoading
-                    ? translationPhase === "downloading"
-                      ? "Downloading..."
-                      : "Preparing..."
-                    : "Download"}
-                </button>
-                <span className={`text-[10px] ${labelClass(theme)}`}>
-                  One-time download, no internet after install
-                </span>
-              </div>
-
-              {translationProgress !== null && translationModelLoading && (
-                <div className="mt-2 space-y-1">
-                  <div className={`h-1 rounded-full overflow-hidden ${trackClass(theme)}`}>
-                    <div
-                      className="h-full bg-zan-cyan transition-all duration-300"
-                      style={{ width: `${Math.min(100, Math.max(0, translationProgress))}%` }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className={labelClass(theme)}>
-                      {translationPhase === "downloading"
-                        ? `Downloading model ${Math.min(100, Math.max(0, translationProgress)).toFixed(1)}%`
-                        : `Preparing local files ${Math.min(100, Math.max(0, translationProgress)).toFixed(1)}%`}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {translationError && (
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="text-[10px] text-red-400 max-w-[16rem] truncate" title={translationError}>
-                    {translationError}
-                  </span>
-                  <button
-                    onClick={handleDownloadTranslationModel}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-medium border transition-all text-gray-300 hover:bg-gray-700/60"
-                  >
-                    <RefreshCw className="w-3 h-3 text-red-400" />
-                    Retry
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
-
-      {/* Target Language */}
-      <section className="space-y-2">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h3 className={`text-sm font-semibold ${valueClass(theme)}`}>
-              Target Language
-            </h3>
-            <Languages className={`w-4 h-4 ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`} />
-          </div>
-          <p className={`text-xs ${labelClass(theme)}`}>
-            Whisper transcribes every video in English first, then the offline
-            translation model converts those English captions into the language
-            you want to read here. English is the default.
-          </p>
-        </div>
-
-        <div className={`p-4 rounded-xl border ${card(theme)}`}>
-          <label className={`block text-sm font-medium mb-2 ${labelClass(theme)}`}>
-            Target subtitle language
-          </label>
-          <select
-            value={targetLanguage}
-            onChange={(e) => setTargetLanguage(e.target.value)}
-            className={inputClass}
-          >
-            {SUBTITLE_LANGUAGES.map((lang) => (
-              <option key={lang.code} value={lang.code}>
-                {lang.name}
-              </option>
-            ))}
-          </select>
-          <p className={`text-[11px] mt-2 ${labelClass(theme)}`}>
-            Changing this also applies to the currently loaded video's captions.
-          </p>
-        </div>
-      </section>
-
       {/* Subtitle Style */}
       <section className="space-y-4">
         <h3 className={`text-sm font-semibold flex items-center gap-2 ${valueClass(theme)}`}>
@@ -870,65 +667,6 @@ export const SettingsComponent = () => {
         </div>
       </section>
 
-      {/* Transcription Mode */}
-      <section className="space-y-4">
-        <h3 className={`text-sm font-semibold flex items-center gap-2 ${valueClass(theme)}`}>
-          <Languages className="w-4 h-4 opacity-70" />
-          Transcription Mode
-        </h3>
-        <p className={`text-xs ${labelClass(theme)}`}>
-          How subtitles are produced while a video is being transcribed.
-        </p>
-        <div className="grid grid-cols-1 gap-2">
-          <button
-            onClick={() => setTranscriptionMode("realtime")}
-            className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
-              transcriptionMode === "realtime"
-                ? "bg-zan-cyan/15 border-zan-cyan/50"
-                : card(theme)
-            }`}
-          >
-            <span
-              className={`mt-0.5 inline-block w-3 h-3 rounded-full border-2 shrink-0 ${
-                transcriptionMode === "realtime" ? "bg-zan-cyan border-zan-cyan" : "border-gray-400"
-              }`}
-            />
-            <span>
-              <span className={`block text-sm font-medium ${valueClass(theme)}`}>
-                Real-time (Streaming)
-              </span>
-              <span className={`block text-xs mt-0.5 ${labelClass(theme)}`}>
-                Subtitles appear dynamically while playing, so you can start watching almost
-                immediately.
-              </span>
-            </span>
-          </button>
-          <button
-            onClick={() => setTranscriptionMode("full")}
-            className={`flex items-start gap-3 p-3 rounded-lg border text-left transition-colors ${
-              transcriptionMode === "full"
-                ? "bg-zan-cyan/15 border-zan-cyan/50"
-                : card(theme)
-            }`}
-          >
-            <span
-              className={`mt-0.5 inline-block w-3 h-3 rounded-full border-2 shrink-0 ${
-                transcriptionMode === "full" ? "bg-zan-cyan border-zan-cyan" : "border-gray-400"
-              }`}
-            />
-            <span>
-              <span className={`block text-sm font-medium ${valueClass(theme)}`}>
-                Full (Batch)
-              </span>
-              <span className={`block text-xs mt-0.5 ${labelClass(theme)}`}>
-                Waits for 100% completion before showing subtitles. Best for exporting and
-                precise editing.
-              </span>
-            </span>
-          </button>
-        </div>
-      </section>
-
       {/* About */}
       <section className="space-y-2">
         <h3 className={`text-sm font-medium flex items-center gap-2 ${labelClass(theme)}`}>
@@ -936,15 +674,15 @@ export const SettingsComponent = () => {
           About
         </h3>
         <div className={`p-8 rounded-2xl border flex flex-col items-center text-center gap-3 ${card(theme)}`}>
-          <img src={logoUrl} alt="ZanPlayer logo" className="w-20 h-20 rounded-2xl shadow-xl" />
+          <img src={logoUrl} alt="ZanPlayer Lite logo" className="w-20 h-20 rounded-2xl shadow-xl" />
           <div>
-            <h4 className={`text-xl font-bold ${valueClass(theme)}`}>ZanPlayer</h4>
+            <h4 className={`text-xl font-bold ${valueClass(theme)}`}>ZanPlayer Lite</h4>
             <p className={`text-sm mt-1 ${labelClass(theme)}`}>
               Version {appVersion || "—"}
             </p>
           </div>
           <a
-            href="https://github.com/micropsy/ZanPlayer/releases"
+            href="https://github.com/micropsy/ZanPlayer-Lite/releases"
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 text-sm text-zan-cyan hover:underline"

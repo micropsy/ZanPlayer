@@ -3,6 +3,8 @@ export interface SubtitleCue {
   startTime: number;
   endTime: number;
   text: string;
+  /** Which whisper pass produced this cue: "original" | "translation" */
+  kind?: string;
 }
 
 export interface SubtitleTrack {
@@ -11,6 +13,4 @@ export interface SubtitleTrack {
   language: string;
   cues: SubtitleCue[];
   isGenerated?: boolean;
-  isTranslated?: boolean;
-  sourceTrackId?: string;
 }
